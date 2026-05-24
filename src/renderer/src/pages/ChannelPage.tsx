@@ -151,19 +151,37 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
         <div className="channel-section">
           <div className="section-label">ГОЛОСОВЫЕ КАНАЛЫ</div>
           {CHANNELS.map(ch => (
-            <button
-              key={ch.id}
-              className={`channel-item ${activeChannel.id === ch.id ? 'active' : ''}`}
-              onClick={() => handleChannelSwitch(ch)}
-            >
-              <svg className="ch-icon" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
-              </svg>
-              <span className="ch-name">{ch.name}</span>
+            <div key={ch.id}>
+              <button
+                className={`channel-item ${activeChannel.id === ch.id ? 'active' : ''}`}
+                onClick={() => handleChannelSwitch(ch)}
+              >
+                <svg className="ch-icon" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+                </svg>
+                <span className="ch-name">{ch.name}</span>
+                {connState === 'connected' && activeChannel.id === ch.id && (
+                  <span className="live-dot" />
+                )}
+              </button>
+
               {connState === 'connected' && activeChannel.id === ch.id && (
-                <span className="live-dot" />
+                <div className="voice-members">
+                  <div className="voice-member self">
+                    <div className="vm-avatar">{nickname[0].toUpperCase()}</div>
+                    <span className="vm-name">{nickname}</span>
+                    <span className="vm-speaking" />
+                  </div>
+                  {peers.map(peer => (
+                    <div key={peer.id} className="voice-member">
+                      <div className="vm-avatar">{peer.nickname[0]?.toUpperCase() ?? '?'}</div>
+                      <span className="vm-name">{peer.nickname}</span>
+                      <span className="vm-speaking" />
+                    </div>
+                  ))}
+                </div>
               )}
-            </button>
+            </div>
           ))}
         </div>
 
@@ -240,30 +258,8 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
             <div className="voice-connected">
               <div className="connected-header">
                 <span className="connected-label">В КАНАЛЕ · {activeChannel.name.toUpperCase()}</span>
+                <span className="connected-count">{peers.length + 1} участник{peers.length === 0 ? '' : peers.length < 4 ? 'а' : 'ов'}</span>
               </div>
-
-              <div className="participants">
-                {/* self */}
-                <div className="participant self">
-                  <div className="participant-avatar">{nickname[0].toUpperCase()}</div>
-                  <span className="participant-name">{nickname} (ты)</span>
-                  <span className="participant-status speaking" />
-                </div>
-
-                {/* remote peers */}
-                {peers.map(peer => (
-                  <div key={peer.id} className="participant">
-                    <div className="participant-avatar">{peer.nickname[0]?.toUpperCase() ?? '?'}</div>
-                    <span className="participant-name">{peer.nickname}</span>
-                    <span className="participant-status speaking" />
-                  </div>
-                ))}
-
-                {peers.length === 0 && (
-                  <p className="waiting-peer">Ожидаем других участников…</p>
-                )}
-              </div>
-
               <button className="disconnect-btn" onClick={handleDisconnect}>
                 Отключиться
               </button>

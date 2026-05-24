@@ -570,6 +570,66 @@ html, body, #root {
   padding: 8px 0;
 }
 
+/* voice members in sidebar */
+.voice-members {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 4px 8px;
+}
+
+.voice-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background .1s;
+}
+
+.voice-member:hover { background: var(--bg-4); }
+
+.vm-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.voice-member.self .vm-avatar { background: var(--green); }
+
+.vm-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vm-speaking {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+  opacity: .7;
+}
+
+/* connected count badge */
+.connected-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 8px;
+}
+
 /* ─── LOBBY PAGE ──────────────────────────────────────────── */
 
 .lobby-page {
