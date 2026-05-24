@@ -6,6 +6,9 @@ import { loadProfile, saveProfile, type UserProfile } from '../lib/profile'
 import { loadServers, saveServers, type SavedServer } from '../lib/servers'
 import SettingsModal from './SettingsModal'
 import AddServerModal from './AddServerModal'
+import ScreenShareModal from './ScreenShareModal'
+import ProfileCard from './ProfileCard'
+import StreamViewer from './StreamViewer'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { ipcRenderer } = (window as any).require('electron')
@@ -43,12 +46,27 @@ export default function ChannelPage() {
   const [micMuted, setMicMuted] = useState(false)
   const [deafened, setDeafened] = useState(false)
   const [settings, setSettings] = useState<AudioSettings>(() => loadSettings())
+  const [screenShareOpen, setScreenShareOpen] = useState(false)
+  const [isSharing, setIsSharing] = useState(false)
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null)
+  const [remoteSharingPeers, setRemoteSharingPeers] = useState<Set<string>>(new Set())
+  const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream>>(new Map())
+  const [watchingPeerId, setWatchingPeerId] = useState<string | null>(null)
+  const [profileCard, setProfileCard] = useState<{ peer: PeerInfo; anchor: DOMRect } | null>(null)
 
   const signalingRef = useRef<SignalingClient | null>(null)
   const peerManagerRef = useRef<PeerManager | null>(null)
   const hostedServerIdRef = useRef<string | null>(null)
+  const localVideoRef = useRef<HTMLVideoElement | null>(null)
 
   useEffect(() => { return () => { cleanup() } }, [])
+
+  // Auto-exit StreamViewer when the watched peer stops sharing
+  useEffect(() => {
+    if (watchingPeerId && !remoteVideoStreams.has(watchingPeerId)) {
+      setWatchingPeerId(null)
+    }
+  }, [remoteVideoStreams, watchingPeerId])
 
   // PTT key/mouse handlers
   useEffect(() => {
@@ -118,6 +136,16 @@ export default function ChannelPage() {
       )
     }
 
+    peerManager.onSharingChanged = (set) => setRemoteSharingPeers(new Set(set))
+
+    peerManager.onRemoteVideo = (peerId, track, streams) => {
+      const videoStream = streams[0] ?? new MediaStream([track])
+      setRemoteVideoStreams(prev => new Map(prev).set(peerId, videoStream))
+      track.onended = () => setRemoteVideoStreams(prev => {
+        const m = new Map(prev); m.delete(peerId); return m
+      })
+    }
+
     signaling.on('onPeers', (existingPeers) => {
       for (const p of existingPeers) {
         if (p.avatar) peerAvatars.set(p.id, p.avatar)
@@ -174,6 +202,16 @@ export default function ChannelPage() {
   }, [selectedServerId, servers, profile, settings])
 
   function handleDisconnect() {
+    if (isSharing) {
+      peerManagerRef.current?.stopScreenShare()
+      localScreenStream?.getTracks().forEach(t => t.stop())
+      setLocalScreenStream(null)
+      setIsSharing(false)
+    }
+    setRemoteVideoStreams(new Map())
+    setRemoteSharingPeers(new Set())
+    setWatchingPeerId(null)
+    setProfileCard(null)
     cleanup()
     setPeers([])
     setConnState('idle')
@@ -233,6 +271,26 @@ export default function ChannelPage() {
     peerManagerRef.current?.setDeafened(next)
   }
 
+  async function handleStartScreenShare(stream: MediaStream) {
+    setScreenShareOpen(false)
+    try {
+      await peerManagerRef.current?.startScreenShare(stream)
+      setLocalScreenStream(stream)
+      setIsSharing(true)
+      setTimeout(() => { if (localVideoRef.current) localVideoRef.current.srcObject = stream }, 0)
+    } catch {
+      stream.getTracks().forEach(t => t.stop())
+    }
+  }
+
+  function handleStopScreenShare() {
+    peerManagerRef.current?.stopScreenShare()
+    localScreenStream?.getTracks().forEach(t => t.stop())
+    setLocalScreenStream(null)
+    setIsSharing(false)
+    if (localVideoRef.current) localVideoRef.current.srcObject = null
+  }
+
   function handleSettingsChange(s: AudioSettings) {
     setSettings(s)
     saveSettings(s)
@@ -259,6 +317,18 @@ export default function ChannelPage() {
       )}
       {addServerOpen && (
         <AddServerModal onAdd={handleAddServer} onClose={() => setAddServerOpen(false)} />
+      )}
+      {screenShareOpen && (
+        <ScreenShareModal onStart={handleStartScreenShare} onClose={() => setScreenShareOpen(false)} />
+      )}
+      {profileCard && (
+        <ProfileCard
+          peer={profileCard.peer}
+          stream={remoteVideoStreams.get(profileCard.peer.id)}
+          anchor={profileCard.anchor}
+          onWatch={() => setWatchingPeerId(profileCard.peer.id)}
+          onClose={() => setProfileCard(null)}
+        />
       )}
 
       {/* server rail */}
@@ -320,12 +390,29 @@ export default function ChannelPage() {
                           ? <svg className="vm-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
                           : <span className="vm-speaking" />
                         }
+                        {isSharing && (
+                          <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor" >
+                            <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
+                          </svg>
+                        )}
                       </div>
                       {peers.map(peer => (
-                        <div key={peer.id} className="voice-member">
+                        <div
+                          key={peer.id}
+                          className="voice-member clickable"
+                          onClick={(e) => setProfileCard({ peer, anchor: e.currentTarget.getBoundingClientRect() })}
+                        >
                           <AvatarImg src={peer.avatar} initial={peer.nickname[0] ?? '?'} size={24} />
                           <span className="vm-name">{peer.nickname}</span>
-                          <span className="vm-speaking" />
+                          {remoteSharingPeers.has(peer.id) && (
+                            <span className="vm-live-badge">LIVE</span>
+                          )}
+                          {remoteSharingPeers.has(peer.id)
+                            ? <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
+                              </svg>
+                            : <span className="vm-speaking" />
+                          }
                         </div>
                       ))}
                     </div>
@@ -400,8 +487,23 @@ export default function ChannelPage() {
           {connState === 'connected' && <span className="header-badge">LIVE</span>}
         </div>
 
-        <div className="voice-area">
-          {connState === 'idle' && (
+        <div className={`voice-area${connState === 'connected' && watchingPeerId ? ' watching' : ''}`}>
+          {connState === 'connected' && watchingPeerId && remoteVideoStreams.get(watchingPeerId) && (() => {
+            const wp = peers.find(p => p.id === watchingPeerId)
+            return (
+              <StreamViewer
+                stream={remoteVideoStreams.get(watchingPeerId)!}
+                streamer={{ name: wp?.nickname ?? '?', avatar: wp?.avatar }}
+                micMuted={micMuted}
+                deafened={deafened}
+                onToggleMic={toggleMic}
+                onToggleDeafen={toggleDeafen}
+                onExit={() => setWatchingPeerId(null)}
+              />
+            )
+          })()}
+
+          {!(connState === 'connected' && watchingPeerId) && connState === 'idle' && (
             <div className="voice-idle">
               <div className="voice-icon">
                 <svg viewBox="0 0 24 24" fill="currentColor">
@@ -420,7 +522,7 @@ export default function ChannelPage() {
             </div>
           )}
 
-          {connState === 'connecting' && (
+          {!(connState === 'connected' && watchingPeerId) && connState === 'connecting' && (
             <div className="voice-idle">
               <div className="voice-icon pulse">
                 <svg viewBox="0 0 24 24" fill="currentColor">
@@ -432,7 +534,7 @@ export default function ChannelPage() {
             </div>
           )}
 
-          {connState === 'error' && (
+          {!(connState === 'connected' && watchingPeerId) && connState === 'error' && (
             <div className="voice-idle">
               <div className="voice-icon" style={{ color: 'var(--red)' }}>
                 <svg viewBox="0 0 24 24" fill="currentColor">
@@ -447,7 +549,7 @@ export default function ChannelPage() {
             </div>
           )}
 
-          {connState === 'connected' && (
+          {!(connState === 'connected' && watchingPeerId) && connState === 'connected' && (
             <div className="voice-connected">
               <div className="connected-header">
                 <span className="connected-label">В КАНАЛЕ · {activeChannel.name.toUpperCase()}</span>
@@ -455,9 +557,47 @@ export default function ChannelPage() {
                   {peers.length + 1} участник{peers.length === 0 ? '' : peers.length < 4 ? 'а' : 'ов'}
                 </span>
               </div>
-              <button className="disconnect-btn" onClick={handleDisconnect}>
-                Отключиться
-              </button>
+
+              {isSharing && (
+                <div className="ss-preview-wrap">
+                  <video ref={localVideoRef} className="ss-preview-video" autoPlay muted playsInline />
+                  <div className="ss-preview-label">Вы транслируете экран</div>
+                </div>
+              )}
+
+              {[...remoteVideoStreams.entries()].map(([peerId, stream]) => (
+                <div key={peerId} className="ss-preview-wrap">
+                  <video
+                    className="ss-preview-video"
+                    autoPlay
+                    playsInline
+                    ref={(el) => { if (el && el.srcObject !== stream) el.srcObject = stream }}
+                  />
+                  <div className="ss-preview-label">
+                    {peers.find(p => p.id === peerId)?.nickname ?? peerId.slice(0, 8)} транслирует экран
+                  </div>
+                </div>
+              ))}
+
+              <div className="ss-action-row">
+                {!isSharing
+                  ? (
+                    <button className="ss-share-btn" onClick={() => setScreenShareOpen(true)}>
+                      <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
+                      </svg>
+                      Трансляция
+                    </button>
+                  ) : (
+                    <button className="ss-stop-btn" onClick={handleStopScreenShare}>
+                      Остановить трансляцию
+                    </button>
+                  )
+                }
+                <button className="disconnect-btn" onClick={handleDisconnect}>
+                  Отключиться
+                </button>
+              </div>
             </div>
           )}
         </div>

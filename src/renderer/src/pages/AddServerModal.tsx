@@ -9,10 +9,11 @@ interface Props {
   onClose: () => void
 }
 
-type Mode = 'choose' | 'hosting' | 'joining'
+type Mode = 'choose' | 'config-hosting' | 'hosting' | 'joining'
 
 export default function AddServerModal({ onAdd, onClose }: Props) {
   const [mode, setMode] = useState<Mode>('choose')
+  const [hostPort, setHostPort] = useState(3001)
   const [hostInfo, setHostInfo] = useState<{ ip: string; port: number } | null>(null)
   const [joinAddress, setJoinAddress] = useState('')
   const [serverName, setServerName] = useState('')
@@ -20,10 +21,11 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
   const [copied, setCopied] = useState(false)
   const overlayRef = useRef<HTMLDivElement>(null)
 
-  async function handleChooseHost() {
+  async function handleStartHost(e: FormEvent) {
+    e.preventDefault()
     setLoading(true)
     try {
-      const info = await ipcRenderer.invoke('server:start') as { ip: string; port: number }
+      const info = await ipcRenderer.invoke('server:start', hostPort) as { ip: string; port: number }
       setHostInfo(info)
       setServerName(`${info.ip}:${info.port}`)
       setMode('hosting')
@@ -50,7 +52,7 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
     onAdd({
       id: crypto.randomUUID(),
       name,
-      url: 'ws://localhost:3001',
+      url: `ws://localhost:${hostInfo.port}`,
       isHost: true,
     })
   }
@@ -79,11 +81,13 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
     setJoinAddress('')
   }
 
+  function handleClose() {
+    if (mode === 'hosting') ipcRenderer.invoke('server:stop')
+    onClose()
+  }
+
   function handleOverlayClick(e: React.MouseEvent) {
-    if (e.target === overlayRef.current) {
-      if (mode === 'hosting') ipcRenderer.invoke('server:stop')
-      onClose()
-    }
+    if (e.target === overlayRef.current) handleClose()
   }
 
   return (
@@ -91,7 +95,7 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
       <div className="modal">
         <div className="modal-header">
           <span className="modal-title">Добавить сервер</span>
-          <button className="modal-close" onClick={() => { if (mode === 'hosting') ipcRenderer.invoke('server:stop'); onClose() }}>
+          <button className="modal-close" onClick={handleClose}>
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
             </svg>
@@ -101,7 +105,7 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
         <div className="modal-section">
           {mode === 'choose' && (
             <div className="add-server-choices">
-              <button className="lobby-choice-btn" onClick={handleChooseHost} disabled={loading}>
+              <button className="lobby-choice-btn" onClick={() => setMode('config-hosting')}>
                 <div className="choice-icon">
                   <svg viewBox="0 0 24 24" fill="currentColor">
                     <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 11H4v-2h11v2zm3-4H4V9h14v2z"/>
@@ -124,6 +128,31 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
                 </div>
               </button>
             </div>
+          )}
+
+          {mode === 'config-hosting' && (
+            <form className="add-server-form" onSubmit={handleStartHost}>
+              <div className="settings-row">
+                <label className="settings-label" htmlFor="host-port">Порт сервера</label>
+                <input
+                  id="host-port"
+                  autoFocus
+                  className="settings-input"
+                  type="number"
+                  min={1024}
+                  max={65535}
+                  value={hostPort}
+                  onChange={e => setHostPort(Number(e.target.value))}
+                />
+              </div>
+              <p className="settings-hint">Порт должен быть открыт в брандмауэре для входящих подключений</p>
+              <div className="add-server-actions">
+                <button type="button" className="lobby-back-btn" onClick={handleBack}>← Назад</button>
+                <button type="submit" className="connect-btn" disabled={loading}>
+                  {loading ? 'Запуск…' : 'Запустить сервер'}
+                </button>
+              </div>
+            </form>
           )}
 
           {mode === 'hosting' && hostInfo && (

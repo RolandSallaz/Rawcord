@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, desktopCapturer } from 'electron'
 import { join } from 'path'
 import { networkInterfaces } from 'os'
 import { autoUpdater } from 'electron-updater'
@@ -62,13 +62,28 @@ ipcMain.on('win:maximize', (e) => {
 ipcMain.on('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
 
 // Signaling server
-ipcMain.handle('server:start', async () => {
-  await startServer(SIGNAL_PORT)
-  return { port: SIGNAL_PORT, ip: getLocalIp() }
+ipcMain.handle('server:start', async (_event, port?: number) => {
+  const p = port ?? SIGNAL_PORT
+  await startServer(p)
+  return { port: p, ip: getLocalIp() }
 })
 
 ipcMain.handle('server:stop', async () => {
   stopServer()
+})
+
+ipcMain.handle('screen:getSources', async () => {
+  const sources = await desktopCapturer.getSources({
+    types: ['screen', 'window'],
+    thumbnailSize: { width: 320, height: 180 },
+    fetchWindowIcons: false,
+  })
+  return sources.map(s => ({
+    id: s.id,
+    name: s.name,
+    thumbnail: s.thumbnail.toDataURL(),
+    type: s.id.startsWith('screen:') ? 'screen' : 'window',
+  }))
 })
 
 app.whenReady().then(() => {
