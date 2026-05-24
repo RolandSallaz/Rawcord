@@ -1,7 +1,22 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import { autoUpdater } from 'electron-updater'
 
 const isDev = process.env['NODE_ENV'] === 'development'
+
+function setupAutoUpdater() {
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('update-downloaded', () => {
+    // silent headless install: quit and reinstall immediately
+    autoUpdater.quitAndInstall(true, true)
+  })
+
+  autoUpdater.checkForUpdates().catch(() => {
+    // no network / no release — silently ignore
+  })
+}
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -42,6 +57,9 @@ ipcMain.on('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
 
 app.whenReady().then(() => {
   createWindow()
+
+  if (app.isPackaged) setupAutoUpdater()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
