@@ -569,3 +569,190 @@ html, body, #root {
   text-align: center;
   padding: 8px 0;
 }
+
+/* ─── LOBBY PAGE ──────────────────────────────────────────── */
+
+.lobby-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  background: radial-gradient(ellipse at 60% 40%, #2a2d5e 0%, var(--bg-1) 70%);
+}
+
+.lobby-card {
+  background: var(--bg-2);
+  border-radius: 8px;
+  padding: 40px 40px 32px;
+  width: 480px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.lobby-greeting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.lobby-nick {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.lobby-sub {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.lobby-choices {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.lobby-choice-btn {
+  flex: 1;
+  background: var(--bg-3);
+  border: 1px solid var(--bg-4);
+  border-radius: 8px;
+  padding: 20px 16px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  transition: background .15s, border-color .15s, transform .1s;
+  font-family: var(--font);
+}
+
+.lobby-choice-btn:hover:not(:disabled) {
+  background: var(--bg-4);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.lobby-choice-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.choice-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.choice-icon svg { width: 22px; height: 22px; }
+
+.choice-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.choice-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.choice-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.lobby-hosting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.hosting-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.hosting-address {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--bg-4);
+  border-radius: 6px;
+  padding: 10px 14px;
+  width: 100%;
+}
+
+.address-text {
+  flex: 1;
+  font-size: 16px;
+  font-family: monospace;
+  color: var(--text-primary);
+  letter-spacing: .4px;
+}
+
+.copy-btn {
+  background: var(--bg-4);
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  font-family: var(--font);
+  transition: background .12s, color .12s;
+  flex-shrink: 0;
+}
+
+.copy-btn:hover { background: var(--accent); color: #fff; }
+
+.hosting-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 320px;
+}
+
+.hosting-enter {
+  background: var(--accent);
+  width: 100%;
+}
+
+.hosting-enter:hover { opacity: .88; }
+
+.lobby-join-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.lobby-back-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--font);
+  transition: color .12s;
+  align-self: flex-start;
+}
+
+.lobby-back-btn:hover { color: var(--text-primary); }

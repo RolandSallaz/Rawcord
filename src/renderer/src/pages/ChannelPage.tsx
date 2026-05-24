@@ -2,8 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { SignalingClient, type PeerInfo } from '../lib/signaling'
 import { PeerManager } from '../lib/webrtc'
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const { ipcRenderer } = (window as any).require('electron')
+
 interface Props {
   nickname: string
+  signalingUrl: string
+  isHost: boolean
   onLeave: () => void
 }
 
@@ -14,7 +19,7 @@ const CHANNELS = [
   { id: 'gaming', name: 'игровой' },
 ]
 
-export default function ChannelPage({ nickname, onLeave }: Props) {
+export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }: Props) {
   const [activeChannel, setActiveChannel] = useState(CHANNELS[0])
   const [connState, setConnState] = useState<ConnectionState>('idle')
   const [errorMsg, setErrorMsg] = useState('')
@@ -48,7 +53,7 @@ export default function ChannelPage({ nickname, onLeave }: Props) {
       return
     }
 
-    const signaling = new SignalingClient()
+    const signaling = new SignalingClient(signalingUrl)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
 
@@ -112,7 +117,7 @@ export default function ChannelPage({ nickname, onLeave }: Props) {
 
     signaling.join(activeChannel.id, nickname)
     setConnState('connected')
-  }, [activeChannel, nickname])
+  }, [activeChannel, nickname, signalingUrl])
 
   function handleDisconnect() {
     cleanup()
@@ -170,7 +175,7 @@ export default function ChannelPage({ nickname, onLeave }: Props) {
               {connState === 'connected' ? 'в канале' : 'не в канале'}
             </div>
           </div>
-          <button className="leave-btn" title="Выйти" onClick={onLeave}>
+          <button className="leave-btn" title="Выйти" onClick={() => { if (isHost) ipcRenderer.invoke('server:stop'); onLeave() }}>
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/>
             </svg>
