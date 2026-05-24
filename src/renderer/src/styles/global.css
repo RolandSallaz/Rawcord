@@ -367,6 +367,33 @@ html, body, #root {
 .leave-btn svg { width: 18px; height: 18px; }
 .leave-btn:hover { background: var(--bg-4); color: var(--red); }
 
+.user-controls {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.uc-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .1s, color .1s;
+  flex-shrink: 0;
+}
+
+.uc-btn svg { width: 18px; height: 18px; }
+.uc-btn:hover { background: var(--bg-4); color: var(--text-primary); }
+.uc-btn.active { color: var(--red); }
+.uc-btn.active:hover { background: var(--bg-4); color: var(--red); }
+.uc-btn.leave:hover { background: var(--bg-4); color: var(--red); }
+
 /* main */
 .main {
   flex: 1;
@@ -621,6 +648,13 @@ html, body, #root {
   background: var(--green);
   flex-shrink: 0;
   opacity: .7;
+}
+
+.vm-muted {
+  width: 14px;
+  height: 14px;
+  color: var(--red);
+  flex-shrink: 0;
 }
 
 /* connected count badge */

@@ -97,6 +97,14 @@ export class PeerManager {
     this.onPeersChanged([...this.peers.keys()].map(id => ({ id, nickname: '' })))
   }
 
+  setMicMuted(muted: boolean) {
+    this.stream?.getAudioTracks().forEach(t => { t.enabled = !muted })
+  }
+
+  setDeafened(deafened: boolean) {
+    this.audioContainer.querySelectorAll('audio').forEach(el => { el.muted = deafened })
+  }
+
   destroy() {
     this.destroyAll()
     this.audioContainer.remove()
