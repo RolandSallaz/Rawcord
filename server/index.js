@@ -1,9 +1,25 @@
-const { WebSocketServer } = require('ws')
+const { WebSocketServer, WebSocket } = require('ws')
 const { randomUUID } = require('crypto')
+const http = require('http')
 
 const PORT = process.env.PORT || 3001
 
-const wss = new WebSocketServer({ port: PORT })
+// HTTP healthcheck — нужен для Render keepalive и проверок деплоя
+const server = http.createServer((req, res) => {
+  res.writeHead(200)
+  res.end('ok')
+})
+
+const wss = new WebSocketServer({ server })
+
+// ping каждые 25 сек — не даёт Render засыпать и убивает мёртвые коннекты
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (ws.isAlive === false) { ws.terminate(); return }
+    ws.isAlive = false
+    ws.ping()
+  })
+}, 25000)
 
 // rooms: Map<channelName, Map<peerId, { ws, nickname }>>
 const rooms = new Map()
@@ -15,6 +31,9 @@ function send(ws, msg) {
 }
 
 wss.on('connection', (ws) => {
+  ws.isAlive = true
+  ws.on('pong', () => { ws.isAlive = true })
+
   const id = randomUUID()
   ws._peerId = id
   ws._channel = null
@@ -82,4 +101,6 @@ function leaveChannel(ws) {
   ws._channel = null
 }
 
-console.log(`Signaling server running on ws://localhost:${PORT}`)
+server.listen(PORT, () => {
+  console.log(`Signaling server running on port ${PORT}`)
+})
