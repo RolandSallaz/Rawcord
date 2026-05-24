@@ -1,0 +1,10 @@
+node_modules/
+server/node_modules/
+out/
+dist/
+dist-electron/
+.DS_Store
+*.log
+test-*.txt
+electron-*.txt
+ver.txt
