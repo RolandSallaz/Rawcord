@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { SignalingClient, type PeerInfo } from '../lib/signaling'
 import { PeerManager } from '../lib/webrtc'
+import { loadSettings, saveSettings, type AudioSettings } from '../lib/settings'
+import SettingsModal from './SettingsModal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { ipcRenderer } = (window as any).require('electron')
@@ -26,6 +28,8 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
   const [peers, setPeers] = useState<PeerInfo[]>([])
   const [micMuted, setMicMuted] = useState(false)
   const [deafened, setDeafened] = useState(false)
+  const [settings, setSettings] = useState<AudioSettings>(() => loadSettings())
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const signalingRef = useRef<SignalingClient | null>(null)
   const peerManagerRef = useRef<PeerManager | null>(null)
@@ -34,6 +38,17 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
   useEffect(() => {
     return () => { cleanup() }
   }, [])
+
+  // PTT key handlers
+  useEffect(() => {
+    if (settings.voiceMode !== 'ptt' || connState !== 'connected') return
+    peerManagerRef.current?.setMicMuted(true)
+    const onDown = (e: KeyboardEvent) => { if (e.code === settings.pttKey && !e.repeat) peerManagerRef.current?.setMicMuted(false) }
+    const onUp   = (e: KeyboardEvent) => { if (e.code === settings.pttKey) peerManagerRef.current?.setMicMuted(true) }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+  }, [settings.voiceMode, settings.pttKey, connState])
 
   function cleanup() {
     peerManagerRef.current?.destroy()
@@ -48,7 +63,12 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
 
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      const audioConstraints: MediaTrackConstraints = {
+        deviceId: settings.inputDeviceId ? { exact: settings.inputDeviceId } : undefined,
+        noiseSuppression: settings.noiseSuppression,
+        echoCancellation: true,
+      }
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false })
     } catch {
       setErrorMsg('Нет доступа к микрофону')
       setConnState('error')
@@ -58,6 +78,7 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
     const signaling = new SignalingClient(signalingUrl)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
+    peerManager.setOutputDevice(settings.outputDeviceId)
 
     // track nicknames of connected peers
     const peerNicknames = new Map<string, string>()
@@ -119,7 +140,13 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
 
     signaling.join(activeChannel.id, nickname)
     setConnState('connected')
-  }, [activeChannel, nickname, signalingUrl])
+  }, [activeChannel, nickname, signalingUrl, settings])
+
+  function handleSettingsChange(s: AudioSettings) {
+    setSettings(s)
+    saveSettings(s)
+    peerManagerRef.current?.setOutputDevice(s.outputDeviceId)
+  }
 
   function handleDisconnect() {
     cleanup()
@@ -150,6 +177,9 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
 
   return (
     <div className="layout">
+      {settingsOpen && (
+        <SettingsModal settings={settings} onChange={handleSettingsChange} onClose={() => setSettingsOpen(false)} />
+      )}
       {/* server rail */}
       <div className="server-rail">
         <div className="server-btn active" title="disAnalog">
@@ -247,7 +277,7 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
               )}
             </button>
 
-            <button className="uc-btn" title="Настройки">
+            <button className="uc-btn" title="Настройки" onClick={() => setSettingsOpen(true)}>
               <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
               </svg>

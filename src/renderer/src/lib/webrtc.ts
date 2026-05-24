@@ -11,6 +11,7 @@ export class PeerManager {
   private stream: MediaStream | null = null
   private signaling: SignalingClient
   private audioContainer: HTMLDivElement
+  private outputDeviceId = ''
 
   onPeersChanged: (peers: PeerState[]) => void = () => {}
 
@@ -49,6 +50,9 @@ export class PeerManager {
       audio.srcObject = remoteStream
       audio.autoplay = true
       audio.dataset.peerId = peerId
+      if (this.outputDeviceId && (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId) {
+        (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(this.outputDeviceId).catch(() => {})
+      }
       this.audioContainer.appendChild(audio)
     })
 
@@ -95,6 +99,14 @@ export class PeerManager {
   private notifyChanged() {
     // ChannelPage listens via onPeersChanged to re-render participant list
     this.onPeersChanged([...this.peers.keys()].map(id => ({ id, nickname: '' })))
+  }
+
+  setOutputDevice(deviceId: string) {
+    this.outputDeviceId = deviceId
+    this.audioContainer.querySelectorAll('audio').forEach(el => {
+      const audio = el as unknown as { setSinkId?: (id: string) => Promise<void> }
+      if (deviceId && audio.setSinkId) audio.setSinkId(deviceId).catch(() => {})
+    })
   }
 
   setMicMuted(muted: boolean) {
