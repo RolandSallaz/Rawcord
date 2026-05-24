@@ -2,17 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { SignalingClient, type PeerInfo } from '../lib/signaling'
 import { PeerManager } from '../lib/webrtc'
 import { loadSettings, saveSettings, type AudioSettings } from '../lib/settings'
+import { loadProfile, saveProfile, type UserProfile } from '../lib/profile'
+import { loadServers, saveServers, type SavedServer } from '../lib/servers'
 import SettingsModal from './SettingsModal'
+import AddServerModal from './AddServerModal'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { ipcRenderer } = (window as any).require('electron')
-
-interface Props {
-  nickname: string
-  signalingUrl: string
-  isHost: boolean
-  onLeave: () => void
-}
 
 type ConnectionState = 'idle' | 'connecting' | 'connected' | 'error'
 
@@ -20,34 +16,59 @@ const CHANNELS = [
   { id: 'general', name: 'основной' },
   { id: 'gaming', name: 'игровой' },
 ]
+type Channel = typeof CHANNELS[0]
 
-export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }: Props) {
-  const [activeChannel, setActiveChannel] = useState(CHANNELS[0])
+function AvatarImg({ src, initial, size = 32 }: { src?: string; initial: string; size?: number }) {
+  if (src) return <img src={src} alt="av" className="avatar-img" style={{ width: size, height: size }} />
+  return (
+    <div className="avatar-initials" style={{ width: size, height: size, fontSize: size * 0.44 }}>
+      {initial.toUpperCase()}
+    </div>
+  )
+}
+
+export default function ChannelPage() {
+  const [profile, setProfile] = useState<UserProfile>(() => loadProfile()!)
+  const [servers, setServers] = useState<SavedServer[]>(() => loadServers())
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(
+    () => loadServers()[0]?.id ?? null
+  )
+  const [addServerOpen, setAddServerOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  const [activeChannel, setActiveChannel] = useState<Channel>(CHANNELS[0])
   const [connState, setConnState] = useState<ConnectionState>('idle')
   const [errorMsg, setErrorMsg] = useState('')
   const [peers, setPeers] = useState<PeerInfo[]>([])
   const [micMuted, setMicMuted] = useState(false)
   const [deafened, setDeafened] = useState(false)
   const [settings, setSettings] = useState<AudioSettings>(() => loadSettings())
-  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const signalingRef = useRef<SignalingClient | null>(null)
   const peerManagerRef = useRef<PeerManager | null>(null)
+  const hostedServerIdRef = useRef<string | null>(null)
 
-  // cleanup on unmount
-  useEffect(() => {
-    return () => { cleanup() }
-  }, [])
+  useEffect(() => { return () => { cleanup() } }, [])
 
-  // PTT key handlers
+  // PTT key/mouse handlers
   useEffect(() => {
     if (settings.voiceMode !== 'ptt' || connState !== 'connected') return
     peerManagerRef.current?.setMicMuted(true)
-    const onDown = (e: KeyboardEvent) => { if (e.code === settings.pttKey && !e.repeat) peerManagerRef.current?.setMicMuted(false) }
-    const onUp   = (e: KeyboardEvent) => { if (e.code === settings.pttKey) peerManagerRef.current?.setMicMuted(true) }
-    window.addEventListener('keydown', onDown)
-    window.addEventListener('keyup', onUp)
-    return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+
+    if (settings.pttKey.startsWith('Mouse')) {
+      const btn = parseInt(settings.pttKey.replace('Mouse', ''))
+      const onDown = (e: MouseEvent) => { if (e.button === btn) peerManagerRef.current?.setMicMuted(false) }
+      const onUp   = (e: MouseEvent) => { if (e.button === btn) peerManagerRef.current?.setMicMuted(true) }
+      window.addEventListener('mousedown', onDown)
+      window.addEventListener('mouseup', onUp)
+      return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('mouseup', onUp) }
+    } else {
+      const onDown = (e: KeyboardEvent) => { if (e.code === settings.pttKey && !e.repeat) peerManagerRef.current?.setMicMuted(false) }
+      const onUp   = (e: KeyboardEvent) => { if (e.code === settings.pttKey) peerManagerRef.current?.setMicMuted(true) }
+      window.addEventListener('keydown', onDown)
+      window.addEventListener('keyup', onUp)
+      return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+    }
   }, [settings.voiceMode, settings.pttKey, connState])
 
   function cleanup() {
@@ -57,7 +78,10 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
     signalingRef.current = null
   }
 
-  const handleConnect = useCallback(async () => {
+  const handleConnect = useCallback(async (channel: Channel) => {
+    const server = servers.find(s => s.id === selectedServerId)
+    if (!server) return
+
     setConnState('connecting')
     setErrorMsg('')
 
@@ -75,62 +99,68 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
       return
     }
 
-    const signaling = new SignalingClient(signalingUrl)
+    const signaling = new SignalingClient(server.url)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
     peerManager.setOutputDevice(settings.outputDeviceId)
 
-    // track nicknames of connected peers
-    const peerNicknames = new Map<string, string>()
+    const peerAvatars = new Map<string, string>()
 
     peerManager.onPeersChanged = () => {
       setPeers(
         peerManager.getPeerIds().map(id => ({
           id,
-          nickname: peerNicknames.get(id) ?? id.slice(0, 8),
+          nickname: peerAvatars.get(id) !== undefined
+            ? (peers.find(p => p.id === id)?.nickname ?? id.slice(0, 8))
+            : id.slice(0, 8),
+          avatar: peerAvatars.get(id),
         }))
       )
     }
 
     signaling.on('onPeers', (existingPeers) => {
       for (const p of existingPeers) {
-        peerNicknames.set(p.id, p.nickname)
+        if (p.avatar) peerAvatars.set(p.id, p.avatar)
         peerManager.createPeer(p.id, p.nickname, true)
       }
+      setPeers(existingPeers.map(p => ({ ...p })))
     })
 
     signaling.on('onPeerJoined', (peer) => {
-      peerNicknames.set(peer.id, peer.nickname)
+      if (peer.avatar) peerAvatars.set(peer.id, peer.avatar)
       peerManager.createPeer(peer.id, peer.nickname, true)
+      setPeers(prev => [...prev, peer])
     })
 
     signaling.on('onPeerLeft', (id) => {
-      peerNicknames.delete(id)
+      peerAvatars.delete(id)
       peerManager.removePeer(id)
+      setPeers(prev => prev.filter(p => p.id !== id))
     })
 
     signaling.on('onRelay', (from, payload) => {
-      // If we haven't created this peer yet (they sent an offer first), create as non-initiator
       if (!peerManager.getPeerIds().includes(from)) {
-        const nick = peerNicknames.get(from) ?? from.slice(0, 8)
+        const nick = peers.find(p => p.id === from)?.nickname ?? from.slice(0, 8)
         peerManager.createPeer(from, nick, false)
       }
       peerManager.signal(from, payload as object)
     })
 
     signaling.on('onClose', () => {
-      if (connState === 'connected') {
-        cleanup()
-        setConnState('idle')
-        setPeers([])
-      }
+      cleanup()
+      setConnState('idle')
+      setPeers([])
     })
+
+    if (server.isHost) {
+      try { await ipcRenderer.invoke('server:start') } catch { /* already running */ }
+    }
 
     try {
       await signaling.connect()
     } catch {
       stream.getTracks().forEach(t => t.stop())
-      setErrorMsg('Не удалось подключиться к сигналинг-серверу')
+      setErrorMsg('Не удалось подключиться к серверу')
       setConnState('error')
       return
     }
@@ -138,15 +168,10 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
     signalingRef.current = signaling
     peerManagerRef.current = peerManager
 
-    signaling.join(activeChannel.id, nickname)
+    signaling.join(channel.id, profile.nickname, profile.avatar || undefined)
     setConnState('connected')
-  }, [activeChannel, nickname, signalingUrl, settings])
-
-  function handleSettingsChange(s: AudioSettings) {
-    setSettings(s)
-    saveSettings(s)
-    peerManagerRef.current?.setOutputDevice(s.outputDeviceId)
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedServerId, servers, profile, settings])
 
   function handleDisconnect() {
     cleanup()
@@ -156,9 +181,42 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
     setDeafened(false)
   }
 
-  function handleChannelSwitch(ch: typeof CHANNELS[0]) {
-    if (connState === 'connected') handleDisconnect()
+  function handleChannelClick(ch: Channel) {
+    if (connState === 'connected' && activeChannel.id === ch.id) return
+    if (connState === 'connected' || connState === 'connecting') handleDisconnect()
     setActiveChannel(ch)
+    handleConnect(ch)
+  }
+
+  function handleSelectServer(id: string) {
+    if (id === selectedServerId) return
+    if (connState === 'connected' || connState === 'connecting') handleDisconnect()
+    setSelectedServerId(id)
+  }
+
+  function handleAddServer(srv: SavedServer) {
+    const updated = [...servers, srv]
+    setServers(updated)
+    saveServers(updated)
+    setSelectedServerId(srv.id)
+    setAddServerOpen(false)
+  }
+
+  function handleRemoveServer(id: string) {
+    if (selectedServerId === id && (connState === 'connected' || connState === 'connecting')) {
+      handleDisconnect()
+    }
+    const updated = servers.filter(s => s.id !== id)
+    setServers(updated)
+    saveServers(updated)
+    if (selectedServerId === id) {
+      setSelectedServerId(updated[0]?.id ?? null)
+    }
+    const srv = servers.find(s => s.id === id)
+    if (srv?.isHost && hostedServerIdRef.current === id) {
+      ipcRenderer.invoke('server:stop')
+      hostedServerIdRef.current = null
+    }
   }
 
   function toggleMic() {
@@ -175,71 +233,117 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
     peerManagerRef.current?.setDeafened(next)
   }
 
+  function handleSettingsChange(s: AudioSettings) {
+    setSettings(s)
+    saveSettings(s)
+    peerManagerRef.current?.setOutputDevice(s.outputDeviceId)
+  }
+
+  function handleProfileChange(p: UserProfile) {
+    setProfile(p)
+    saveProfile(p)
+  }
+
+  const selectedServer = servers.find(s => s.id === selectedServerId) ?? null
+
   return (
     <div className="layout">
       {settingsOpen && (
-        <SettingsModal settings={settings} onChange={handleSettingsChange} onClose={() => setSettingsOpen(false)} />
+        <SettingsModal
+          settings={settings}
+          profile={profile}
+          onChange={handleSettingsChange}
+          onProfileChange={handleProfileChange}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
+      {addServerOpen && (
+        <AddServerModal onAdd={handleAddServer} onClose={() => setAddServerOpen(false)} />
+      )}
+
       {/* server rail */}
       <div className="server-rail">
-        <div className="server-btn active" title="disAnalog">
-          <svg viewBox="0 0 24 24" fill="none">
-            <polygon points="12,2 22,7 22,17 12,22 2,17 2,7" fill="#5865f2" opacity="0.85"/>
-            <circle cx="12" cy="12" r="3" fill="#fff" opacity="0.9"/>
-          </svg>
-        </div>
-        <div className="server-divider" />
-        <button className="server-btn add-btn" title="Добавить сервер">+</button>
+        {servers.map(srv => (
+          <div
+            key={srv.id}
+            className={`server-btn-wrap${selectedServerId === srv.id ? ' selected' : ''}`}
+          >
+            <button
+              className="server-btn"
+              title={srv.name}
+              onClick={() => handleSelectServer(srv.id)}
+            >
+              {srv.name.slice(0, 2).toUpperCase()}
+            </button>
+            <button
+              className="server-remove"
+              title="Удалить сервер"
+              onClick={e => { e.stopPropagation(); handleRemoveServer(srv.id) }}
+            >×</button>
+          </div>
+        ))}
+        {servers.length > 0 && <div className="server-divider" />}
+        <button className="server-btn add-btn" title="Добавить сервер" onClick={() => setAddServerOpen(true)}>+</button>
       </div>
 
       {/* channel sidebar */}
       <div className="sidebar">
-        <div className="sidebar-header">disAnalog</div>
+        <div className="sidebar-header">
+          {selectedServer ? selectedServer.name : 'Rawcord'}
+        </div>
 
         <div className="channel-section">
-          <div className="section-label">ГОЛОСОВЫЕ КАНАЛЫ</div>
-          {CHANNELS.map(ch => (
-            <div key={ch.id}>
-              <button
-                className={`channel-item ${activeChannel.id === ch.id ? 'active' : ''}`}
-                onClick={() => handleChannelSwitch(ch)}
-              >
-                <svg className="ch-icon" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
-                </svg>
-                <span className="ch-name">{ch.name}</span>
-                {connState === 'connected' && activeChannel.id === ch.id && (
-                  <span className="live-dot" />
-                )}
-              </button>
+          {selectedServer ? (
+            <>
+              <div className="section-label">ГОЛОСОВЫЕ КАНАЛЫ</div>
+              {CHANNELS.map(ch => (
+                <div key={ch.id}>
+                  <button
+                    className={`channel-item ${activeChannel.id === ch.id && connState !== 'idle' ? 'active' : ''}`}
+                    onClick={() => handleChannelClick(ch)}
+                  >
+                    <svg className="ch-icon" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+                    </svg>
+                    <span className="ch-name">{ch.name}</span>
+                    {connState === 'connected' && activeChannel.id === ch.id && (
+                      <span className="live-dot" />
+                    )}
+                  </button>
 
-              {connState === 'connected' && activeChannel.id === ch.id && (
-                <div className="voice-members">
-                  <div className="voice-member self">
-                    <div className="vm-avatar">{nickname[0].toUpperCase()}</div>
-                    <span className="vm-name">{nickname}</span>
-                    {micMuted
-                      ? <svg className="vm-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
-                      : <span className="vm-speaking" />
-                    }
-                  </div>
-                  {peers.map(peer => (
-                    <div key={peer.id} className="voice-member">
-                      <div className="vm-avatar">{peer.nickname[0]?.toUpperCase() ?? '?'}</div>
-                      <span className="vm-name">{peer.nickname}</span>
-                      <span className="vm-speaking" />
+                  {connState === 'connected' && activeChannel.id === ch.id && (
+                    <div className="voice-members">
+                      <div className="voice-member self">
+                        <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={24} />
+                        <span className="vm-name">{profile.nickname}</span>
+                        {micMuted
+                          ? <svg className="vm-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
+                          : <span className="vm-speaking" />
+                        }
+                      </div>
+                      {peers.map(peer => (
+                        <div key={peer.id} className="voice-member">
+                          <AvatarImg src={peer.avatar} initial={peer.nickname[0] ?? '?'} size={24} />
+                          <span className="vm-name">{peer.nickname}</span>
+                          <span className="vm-speaking" />
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
-              )}
+              ))}
+            </>
+          ) : (
+            <div className="no-server-hint">
+              <p>Нажми «+» чтобы добавить сервер</p>
             </div>
-          ))}
+          )}
         </div>
 
         <div className="user-panel">
-          <div className="user-avatar">{nickname[0].toUpperCase()}</div>
+          <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={32} />
           <div className="user-info">
-            <div className="user-name">{nickname}</div>
+            <div className="user-name">{profile.nickname}</div>
             <div className="user-status">
               {connState === 'connected' ? 'в канале' : 'не в канале'}
             </div>
@@ -282,12 +386,6 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
                 <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
               </svg>
             </button>
-
-            <button className="uc-btn leave" title="Выйти" onClick={() => { if (isHost) ipcRenderer.invoke('server:stop'); onLeave() }}>
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/>
-              </svg>
-            </button>
           </div>
         </div>
       </div>
@@ -310,11 +408,15 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
                   <path d="M12 1c-4.97 0-9 4.03-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2c0-3.87 3.13-7 7-7s7 3.13 7 7v2h-4v8h3c1.66 0 3-1.34 3-3v-7c0-4.97-4.03-9-9-9z"/>
                 </svg>
               </div>
-              <p className="voice-title">Голосовой канал · {activeChannel.name}</p>
-              <p className="voice-desc">Нажми «Подключиться» чтобы войти в канал</p>
-              <button className="connect-btn" onClick={handleConnect}>
-                Подключиться
-              </button>
+              <p className="voice-title">
+                {selectedServer ? `Канал · ${activeChannel.name}` : 'Нет сервера'}
+              </p>
+              <p className="voice-desc">
+                {selectedServer
+                  ? 'Нажми на канал слева чтобы подключиться'
+                  : 'Добавь сервер через «+» в левой панели'
+                }
+              </p>
             </div>
           )}
 
@@ -339,7 +441,7 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
               </div>
               <p className="voice-title" style={{ color: 'var(--red)' }}>Ошибка</p>
               <p className="voice-desc">{errorMsg}</p>
-              <button className="connect-btn" onClick={handleConnect}>
+              <button className="connect-btn" onClick={() => handleChannelClick(activeChannel)}>
                 Попробовать снова
               </button>
             </div>
@@ -349,7 +451,9 @@ export default function ChannelPage({ nickname, signalingUrl, isHost, onLeave }:
             <div className="voice-connected">
               <div className="connected-header">
                 <span className="connected-label">В КАНАЛЕ · {activeChannel.name.toUpperCase()}</span>
-                <span className="connected-count">{peers.length + 1} участник{peers.length === 0 ? '' : peers.length < 4 ? 'а' : 'ов'}</span>
+                <span className="connected-count">
+                  {peers.length + 1} участник{peers.length === 0 ? '' : peers.length < 4 ? 'а' : 'ов'}
+                </span>
               </div>
               <button className="disconnect-btn" onClick={handleDisconnect}>
                 Отключиться

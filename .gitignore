@@ -8,3 +8,4 @@ dist-electron/
 test-*.txt
 electron-*.txt
 ver.txt
+.claude

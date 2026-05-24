@@ -6,6 +6,7 @@ interface Peer {
   id: string
   ws: WebSocket
   nickname: string
+  avatar?: string
 }
 
 let wss: WebSocketServer | null = null
@@ -53,7 +54,7 @@ export function startServer(port: number): Promise<void> {
         try { msg = JSON.parse(raw.toString()) } catch { return }
 
         if (msg.type === 'join') {
-          const { channel, nickname } = msg as { channel: string; nickname: string }
+          const { channel, nickname, avatar } = msg as { channel: string; nickname: string; avatar?: string }
           if (!channel || !nickname) return
 
           leaveChannel(ws)
@@ -61,11 +62,11 @@ export function startServer(port: number): Promise<void> {
           if (!rooms.has(channel)) rooms.set(channel, new Map())
           const room = rooms.get(channel)!
 
-          const peers = [...room.values()].map(p => ({ id: p.id, nickname: p.nickname }))
+          const peers = [...room.values()].map(p => ({ id: p.id, nickname: p.nickname, avatar: p.avatar }))
           send(ws, { type: 'peers', peers })
 
-          room.forEach(peer => send(peer.ws, { type: 'peer-joined', id, nickname }))
-          room.set(id, { id, ws, nickname })
+          room.forEach(peer => send(peer.ws, { type: 'peer-joined', id, nickname, avatar }))
+          room.set(id, { id, ws, nickname, avatar })
           ws._channel = channel
 
         } else if (msg.type === 'relay') {

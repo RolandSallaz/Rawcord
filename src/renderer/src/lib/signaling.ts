@@ -1,6 +1,7 @@
 export interface PeerInfo {
   id: string
   nickname: string
+  avatar?: string
 }
 
 type RelayPayload = object
@@ -39,7 +40,7 @@ export class SignalingClient {
             this.handlers.onPeers?.(msg.peers as PeerInfo[])
             break
           case 'peer-joined':
-            this.handlers.onPeerJoined?.({ id: msg.id as string, nickname: msg.nickname as string })
+            this.handlers.onPeerJoined?.({ id: msg.id as string, nickname: msg.nickname as string, avatar: msg.avatar as string | undefined })
             break
           case 'peer-left':
             this.handlers.onPeerLeft?.(msg.id as string)
@@ -54,8 +55,8 @@ export class SignalingClient {
     })
   }
 
-  join(channel: string, nickname: string) {
-    this.send({ type: 'join', channel, nickname })
+  join(channel: string, nickname: string, avatar?: string) {
+    this.send({ type: 'join', channel, nickname, avatar })
   }
 
   relay(to: string, payload: RelayPayload) {
