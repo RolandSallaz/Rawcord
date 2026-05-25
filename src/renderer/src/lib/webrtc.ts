@@ -19,6 +19,7 @@ export class PeerManager {
 
   private screenStream: MediaStream | null = null
   private screenTrack: MediaStreamTrack | null = null
+  private screenAudioTrack: MediaStreamTrack | null = null
   private peerNicknames = new Map<string, string>()
   private sharingPeers = new Set<string>()
   private audioCtx: AudioContext | null = null
@@ -65,7 +66,8 @@ export class PeerManager {
     })
 
     peer.on('stream', (remoteStream: MediaStream) => {
-      if (!this.audioContainer.querySelector(`audio[data-peer-id="${peerId}"]`)) {
+      const isScreenStream = remoteStream.getVideoTracks().length > 0
+      if (!isScreenStream && !this.audioContainer.querySelector(`audio[data-peer-id="${peerId}"]`)) {
         const audio = document.createElement('audio')
         audio.srcObject = remoteStream
         audio.autoplay = true
@@ -121,44 +123,55 @@ export class PeerManager {
 
     this.peers.set(peerId, peer)
 
-    // If we are already sharing, immediately add the screen track to this new peer.
+    // If we are already sharing, immediately add the screen tracks to this new peer.
     if (this.screenTrack && this.screenStream) {
       peer.addTrack(this.screenTrack, this.screenStream)
+      if (this.screenAudioTrack) {
+        peer.addTrack(this.screenAudioTrack, this.screenStream)
+      }
     }
 
     this.notifyChanged()
   }
 
   async startScreenShare(stream: MediaStream): Promise<void> {
-    const track = stream.getVideoTracks()[0]
-    if (!track) throw new Error('No video track in stream')
+    const videoTrack = stream.getVideoTracks()[0]
+    if (!videoTrack) throw new Error('No video track in stream')
 
     this.screenStream = stream
-    this.screenTrack = track
+    this.screenTrack = videoTrack
+    this.screenAudioTrack = stream.getAudioTracks()[0] ?? null
 
     for (const [, peer] of this.peers) {
       if (peer.destroyed) continue
-      peer.addTrack(track, stream)
+      peer.addTrack(videoTrack, stream)
+      if (this.screenAudioTrack) {
+        peer.addTrack(this.screenAudioTrack, stream)
+      }
     }
 
     // Handle user stopping via OS "Stop sharing" button
-    track.onended = () => this.stopScreenShare()
+    videoTrack.onended = () => this.stopScreenShare()
   }
 
   stopScreenShare(): void {
     if (!this.screenTrack) return
-    const t = this.screenTrack
+    const vt = this.screenTrack
+    const at = this.screenAudioTrack
     const s = this.screenStream
 
     for (const [, peer] of this.peers) {
       if (peer.destroyed) continue
-      if (s) peer.removeTrack(t, s)
+      if (s) peer.removeTrack(vt, s)
+      if (at && s) peer.removeTrack(at, s)
     }
 
-    t.stop()
+    vt.stop()
+    at?.stop()
     this.screenStream?.getTracks().forEach(tr => tr.stop())
     this.screenStream = null
     this.screenTrack = null
+    this.screenAudioTrack = null
   }
 
   updatePeerNickname(peerId: string, nickname: string) {
