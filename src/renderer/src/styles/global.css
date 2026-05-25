@@ -1792,29 +1792,30 @@ html, body, #root {
 /* Create server card with port input */
 .create-server-card {
   flex-direction: column !important; gap: 6px !important; cursor: default !important;
+  min-width: 180px;
 }
 .create-server-card:hover { background: var(--bg-0) !important; }
 .create-server-card svg { width: 28px; height: 28px; opacity: .6; }
 .port-label {
-  font-size: 13px; color: var(--text-muted); white-space: nowrap; align-self: center;
+  font-size: 12px; color: var(--text-muted); white-space: nowrap; align-self: center; flex-shrink: 0;
 }
 .port-input {
-  max-width: 100px; flex: 0 0 auto !important;
+  width: 80px; flex: 0 0 auto !important;
 }
 
 .connect-input-row {
-  display: flex; gap: 6px; width: 100%;
+  display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0;
 }
 .server-url-input {
-  flex: 1; background: var(--bg-2); border: 1px solid var(--bg-3); border-radius: 6px;
+  flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--bg-3); border-radius: 6px;
   padding: 6px 10px; font-size: 13px; color: var(--text-primary); outline: none;
-  font-family: inherit;
+  font-family: inherit; box-sizing: border-box;
 }
 .server-url-input::placeholder { color: var(--text-muted); }
 .server-url-input:focus { border-color: var(--accent); }
 .connect-submit-btn {
-  background: var(--accent); border: none; border-radius: 6px; padding: 6px 14px;
-  font-size: 13px; font-weight: 600; color: #fff; cursor: pointer; white-space: nowrap;
+  background: var(--accent); border: none; border-radius: 6px; padding: 6px 10px;
+  font-size: 12px; font-weight: 600; color: #fff; cursor: pointer; white-space: nowrap; flex-shrink: 0;
 }
 .connect-submit-btn:disabled { opacity: .4; cursor: default; }
 

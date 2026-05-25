@@ -32,8 +32,13 @@ export class SignalingClient {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.url)
 
-      this.ws.onopen = () => resolve()
-      this.ws.onerror = () => reject(new Error('Cannot connect to signaling server'))
+      const timer = setTimeout(() => {
+        this.ws?.close()
+        reject(new Error('Connection timeout'))
+      }, 5000)
+
+      this.ws.onopen = () => { clearTimeout(timer); resolve() }
+      this.ws.onerror = () => { clearTimeout(timer); reject(new Error('Cannot connect to signaling server')) }
 
       this.ws.onmessage = (e) => {
         let msg: Record<string, unknown>

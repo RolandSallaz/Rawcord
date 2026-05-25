@@ -362,13 +362,13 @@ export default function ChannelPage() {
     }
     try {
       const result: { port: number; ip: string } = await ipcRenderer.invoke('server:start', port)
-      const url = `ws://${result.ip}:${result.port}`
-      setServerUrl(url)
+      const url = `ws://127.0.0.1:${result.port}`
+      setServerUrl(`ws://${result.ip}:${result.port}`)
       setIsOwner(true)
       await connectToChannel(null, true, () => new SignalingClient(url))
     } catch (e) {
       const msg = e instanceof Error ? e.message : ''
-      if (msg.includes('EADDRINUSE') || msg.includes('already in use')) {
+      if (msg.includes('EADDRINUSE') || msg.includes('already in use') || msg.includes('listen')) {
         setErrorMsg(`Порт ${serverPort} уже занят. Укажите другой порт.`)
       } else {
         setErrorMsg(msg || 'Не удалось запустить сервер')

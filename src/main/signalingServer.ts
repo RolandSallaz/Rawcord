@@ -36,7 +36,9 @@ function leaveChannel(ws: WebSocket & { _peerId?: string; _channel?: string }) {
 
 export function startServer(port: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (wss) resolve()
+    if (wss) return resolve()
+
+    const timer = setTimeout(() => reject(new Error('Server start timeout')), 3000)
 
     httpServer = createServer((_req, res) => { res.writeHead(200); res.end('ok') })
     wss = new WebSocketServer({ server: httpServer })
@@ -119,8 +121,8 @@ export function startServer(port: number): Promise<void> {
 
     wss.on('close', () => clearInterval(interval))
 
-    httpServer.listen(port, () => resolve())
-    httpServer.on('error', reject)
+    httpServer.listen(port, () => { clearTimeout(timer); resolve() })
+    httpServer.on('error', (e) => { clearTimeout(timer); reject(e) })
   })
 }
 
