@@ -1,79 +1,80 @@
 {
-  "name": "rawcord",
-  "version": "0.3.0",
-  "description": "P2P Discord analog",
-  "main": "out/main/index.js",
-  "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "preview": "electron-vite preview",
-    "package": "npm run build && electron-builder",
-    "release": "npm run build && electron-builder --publish always"
-  },
-  "build": {
-    "appId": "com.rawcord.app",
-    "productName": "Rawcord",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "out/**/*",
-      "package.json"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "artifactName": "${productName}-Setup-${version}.${ext}"
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
-      "deleteAppDataOnUninstall": false
-    },
-    "linux": {
-      "target": "AppImage",
-      "artifactName": "${productName}-${version}.${ext}"
-    },
-    "mac": {
-      "target": "dmg",
-      "artifactName": "${productName}-${version}.${ext}"
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "RolandSallaz",
-      "repo": "Rawcord"
-    }
-  },
-  "devDependencies": {
-    "@types/node": "^20.14.0",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
-    "@types/simple-peer": "^9.11.9",
-    "@types/ws": "^8.18.1",
-    "@vitejs/plugin-react": "^4.3.1",
-    "electron": "^28.3.3",
-    "electron-builder": "^26.8.1",
-    "electron-vite": "^2.3.0",
-    "typescript": "^5.5.2",
-    "vite": "^5.3.1"
-  },
-  "dependencies": {
-    "@electron-toolkit/preload": "^3.0.2",
-    "@electron-toolkit/utils": "^4.0.0",
-    "electron-updater": "^6.8.3",
-    "gifenc": "^1.0.3",
-    "gifuct-js": "^2.1.2",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "simple-peer": "^9.11.1",
-    "steamworks.js": "^0.4.0",
-    "ws": "^8.21.0"
-  }
+    "name":  "rawcord",
+    "version":  "0.3.0",
+    "description":  "P2P Discord analog",
+    "main":  "out/main/index.js",
+    "scripts":  {
+                    "dev":  "electron-vite dev",
+                    "build":  "electron-vite build",
+                    "preview":  "electron-vite preview",
+                    "package":  "npm run build \u0026\u0026 electron-builder",
+                    "release":  "npm run build \u0026\u0026 electron-builder --publish always"
+                },
+    "build":  {
+                  "appId":  "com.rawcord.app",
+                  "productName":  "Rawcord",
+                  "directories":  {
+                                      "output":  "release"
+                                  },
+                  "files":  [
+                                "out/**/*",
+                                "package.json"
+                            ],
+                  "win":  {
+                              "target":  [
+                                             {
+                                                 "target":  "nsis",
+                                                 "arch":  [
+                                                              "x64"
+                                                          ]
+                                             }
+                                         ],
+                              "artifactName":  "${productName}-Setup-${version}.${ext}"
+                          },
+                  "nsis":  {
+                               "oneClick":  true,
+                               "perMachine":  false,
+                               "allowToChangeInstallationDirectory":  false,
+                               "deleteAppDataOnUninstall":  false
+                           },
+                  "linux":  {
+                                "target":  "AppImage",
+                                "artifactName":  "${productName}-${version}.${ext}"
+                            },
+                  "mac":  {
+                              "target":  "dmg",
+                              "artifactName":  "${productName}-${version}.${ext}"
+                          },
+                  "publish":  {
+                                  "provider":  "github",
+                                  "owner":  "RolandSallaz",
+                                  "repo":  "Rawcord",
+                                  "releaseType":  "release"
+                              }
+              },
+    "devDependencies":  {
+                            "@types/node":  "^20.14.0",
+                            "@types/react":  "^18.3.3",
+                            "@types/react-dom":  "^18.3.0",
+                            "@types/simple-peer":  "^9.11.9",
+                            "@types/ws":  "^8.18.1",
+                            "@vitejs/plugin-react":  "^4.3.1",
+                            "electron":  "^28.3.3",
+                            "electron-builder":  "^26.8.1",
+                            "electron-vite":  "^2.3.0",
+                            "typescript":  "^5.5.2",
+                            "vite":  "^5.3.1"
+                        },
+    "dependencies":  {
+                         "@electron-toolkit/preload":  "^3.0.2",
+                         "@electron-toolkit/utils":  "^4.0.0",
+                         "electron-updater":  "^6.8.3",
+                         "gifenc":  "^1.0.3",
+                         "gifuct-js":  "^2.1.2",
+                         "react":  "^18.3.1",
+                         "react-dom":  "^18.3.1",
+                         "simple-peer":  "^9.11.1",
+                         "steamworks.js":  "^0.4.0",
+                         "ws":  "^8.21.0"
+                     }
 }
