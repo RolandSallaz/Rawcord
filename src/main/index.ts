@@ -22,7 +22,7 @@ function getLocalIp(): string {
 }
 
 function createUpdateHtml(): string {
-  return `data:text/html;charset=utf-8,<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html>
 <head>
 <style>
@@ -51,6 +51,7 @@ function setProgress(p){document.getElementById('progressBar').style.width=p+'%'
 </script>
 </body>
 </html>`
+  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
 }
 
 function showUpdateWindow(): Promise<void> {
