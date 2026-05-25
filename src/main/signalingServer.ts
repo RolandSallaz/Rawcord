@@ -12,7 +12,6 @@ interface Peer {
 let wss: WebSocketServer | null = null
 let httpServer: HttpServer | null = null
 
-// rooms: channel → Map<peerId, Peer>
 const rooms = new Map<string, Map<string, Peer>>()
 
 function send(ws: WebSocket, msg: object) {
@@ -37,7 +36,7 @@ function leaveChannel(ws: WebSocket & { _peerId?: string; _channel?: string }) {
 
 export function startServer(port: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (wss) resolve() // already running
+    if (wss) resolve()
 
     httpServer = createServer((_req, res) => { res.writeHead(200); res.end('ok') })
     wss = new WebSocketServer({ server: httpServer })
@@ -77,6 +76,28 @@ export function startServer(port: number): Promise<void> {
           const target = room?.get(to)
           if (target) send(target.ws, { type: 'relay', from: id, payload })
 
+        } else if (msg.type === 'announce') {
+          const { nickname, avatar } = msg as { nickname: string; avatar?: string }
+          if (!ws._channel || !nickname) return
+          const room = rooms.get(ws._channel)
+          if (!room) return
+          const peer = room.get(id)
+          if (!peer) return
+          peer.nickname = nickname
+          peer.avatar = avatar
+          room.forEach(p => {
+            if (p.id !== id) send(p.ws, { type: 'peer-updated', id, nickname, avatar })
+          })
+
+        } else if (msg.type === 'chat') {
+          const { text, nickname, avatar } = msg as { text: string; nickname: string; avatar?: string }
+          if (!text || !ws._channel) return
+          const room = rooms.get(ws._channel)
+          if (!room) return
+          room.forEach(p => {
+            if (p.id !== id) send(p.ws, { type: 'chat', from: id, text, nickname, avatar })
+          })
+
         } else if (msg.type === 'leave') {
           leaveChannel(ws)
         }
@@ -101,6 +122,13 @@ export function startServer(port: number): Promise<void> {
     httpServer.listen(port, () => resolve())
     httpServer.on('error', reject)
   })
+}
+
+export function getServerPort(): number | null {
+  if (!httpServer) return null
+  const addr = httpServer.address()
+  if (addr && typeof addr === 'object') return addr.port
+  return null
 }
 
 export function stopServer() {

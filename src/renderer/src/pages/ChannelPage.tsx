@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { SteamSignalingClient } from '../lib/steamSignaling'
-import type { PeerInfo } from '../lib/signaling'
+import { SignalingClient, type PeerInfo } from '../lib/signaling'
 import { PeerManager } from '../lib/webrtc'
 import { loadSettings, saveSettings, type AudioSettings } from '../lib/settings'
 import { loadProfile, saveProfile, type UserProfile } from '../lib/profile'
@@ -13,6 +13,17 @@ import StreamViewer from './StreamViewer'
 const { ipcRenderer } = (window as any).require('electron')
 
 type AppState = 'idle' | 'browsing' | 'connecting' | 'connected' | 'error'
+type ConnectionMode = 'steam' | 'server'
+
+interface ISignalingClient {
+  on(event: string, handler: (...args: unknown[]) => void): void
+  connect(): Promise<void>
+  join(channel: string, nickname: string, avatar?: string): void
+  relay(to: string, payload: object): void
+  sendChat(text: string): void
+  updateProfile(nickname: string, avatar?: string): void
+  disconnect(): void
+}
 
 interface ChatMessage {
   id: string
@@ -47,11 +58,15 @@ export default function ChannelPage() {
 
   const [appState, setAppState] = useState<AppState>('idle')
   const [errorMsg, setErrorMsg] = useState('')
+  const [mode, setMode] = useState<ConnectionMode>('steam')
   const [isOwner, setIsOwner] = useState(false)
   const [currentLobbyId, setCurrentLobbyId] = useState<string | null>(null)
 
   const [lobbies, setLobbies] = useState<LobbyEntry[]>([])
   const [loadingLobbies, setLoadingLobbies] = useState(false)
+
+  const [serverUrl, setServerUrl] = useState('')
+  const [serverInput, setServerInput] = useState('')
 
   const [peers, setPeers] = useState<PeerInfo[]>([])
   const [micMuted, setMicMuted] = useState(false)
@@ -148,7 +163,7 @@ export default function ChannelPage() {
       const lobbyId: string = await ipcRenderer.invoke('steam:createLobby')
       setCurrentLobbyId(lobbyId)
       setIsOwner(true)
-      await connectToLobby(lobbyId, true)
+      await connectToChannel(lobbyId, true, (_id) => new SteamSignalingClient(lobbyId, true))
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : 'Не удалось создать лобби')
       setAppState('error')
@@ -160,11 +175,11 @@ export default function ChannelPage() {
     setErrorMsg('')
     setCurrentLobbyId(lobbyId)
     setIsOwner(false)
-    await connectToLobby(lobbyId, false)
+    await connectToChannel(lobbyId, false, (_id) => new SteamSignalingClient(lobbyId, false))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, profile])
 
-  const connectToLobby = useCallback(async (lobbyId: string, owner: boolean) => {
+  const connectToChannel = useCallback(async (lobbyId: string | null, owner: boolean, factory: (lobbyId: string | null) => ISignalingClient) => {
     let stream: MediaStream
     try {
       const audioConstraints: MediaTrackConstraints = {
@@ -176,7 +191,7 @@ export default function ChannelPage() {
     } catch {
       setErrorMsg('Нет доступа к микрофону')
       setAppState('error')
-      if (!owner) ipcRenderer.invoke('steam:leaveLobby', false).catch(() => {})
+      if (mode === 'steam' && !owner) ipcRenderer.invoke('steam:leaveLobby', false).catch(() => {})
       return
     }
 
@@ -197,7 +212,7 @@ export default function ChannelPage() {
       localVadRef.current = { ctx, interval }
     } catch { /* optional */ }
 
-    const signaling = new SteamSignalingClient(lobbyId, owner)
+    const signaling = factory(lobbyId)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
     peerManager.setOutputDevice(settings.outputDeviceId)
@@ -224,36 +239,36 @@ export default function ChannelPage() {
       track.onended = () => setRemoteVideoStreams(prev => { const m = new Map(prev); m.delete(peerId); return m })
     }
 
-    signaling.on('onPeers', (existingPeers) => {
+    signaling.on('onPeers', (existingPeers: PeerInfo[]) => {
       for (const p of existingPeers) {
         peerInfo.set(p.id, p)
         peerManager.createPeer(p.id, p.nickname, false)
       }
       setPeers(existingPeers.map(p => ({ ...p })))
     })
-    signaling.on('onPeerJoined', (peer) => {
+    signaling.on('onPeerJoined', (peer: PeerInfo) => {
       peerInfo.set(peer.id, peer)
       peerManager.createPeer(peer.id, peer.nickname, true)
       setPeers(prev => prev.some(p => p.id === peer.id) ? prev : [...prev, peer])
     })
-    signaling.on('onPeerUpdated', (peer) => {
+    signaling.on('onPeerUpdated', (peer: PeerInfo) => {
       peerInfo.set(peer.id, peer)
       peerManager.updatePeerNickname(peer.id, peer.nickname)
       setPeers(prev => prev.map(p => p.id === peer.id ? { ...p, ...peer } : p))
     })
-    signaling.on('onPeerLeft', (id) => {
+    signaling.on('onPeerLeft', (id: string) => {
       peerInfo.delete(id)
       peerManager.removePeer(id)
       setPeers(prev => prev.filter(p => p.id !== id))
     })
-    signaling.on('onRelay', (from, payload) => {
+    signaling.on('onRelay', (from: string, payload: object) => {
       if (!peerManager.getPeerIds().includes(from)) {
         const info = peerInfo.get(from)
         peerManager.createPeer(from, info?.nickname ?? from.slice(0, 8), false)
       }
       peerManager.signal(from, payload as object)
     })
-    signaling.on('onChat', (from, text, nickname, avatar) => {
+    signaling.on('onChat', (from: string, text: string, nickname: string, avatar?: string) => {
       setChatMessages(prev => [...prev, {
         id: `${from}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         from,
@@ -269,6 +284,7 @@ export default function ChannelPage() {
       setPeers([])
       setCurrentLobbyId(null)
       setChatMessages([])
+      setServerUrl('')
     })
 
     try {
@@ -276,7 +292,8 @@ export default function ChannelPage() {
     } catch {
       stream.getTracks().forEach(t => t.stop())
       cleanup()
-      setErrorMsg('Не удалось подключиться к лобби Steam')
+      const errMsg = mode === 'steam' ? 'Не удалось подключиться к лобби Steam' : 'Не удалось подключиться к серверу'
+      setErrorMsg(errMsg)
       setAppState('error')
       return
     }
@@ -286,7 +303,7 @@ export default function ChannelPage() {
     signaling.join('', profile.nickname, profile.avatar || undefined)
     setAppState('connected')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings, profile])
+  }, [settings, profile, mode])
 
   function handleDisconnect() {
     if (isSharing) {
@@ -307,6 +324,8 @@ export default function ChannelPage() {
     prevMicMutedRef.current = false
     setCurrentLobbyId(null)
     setIsOwner(false)
+    setServerUrl('')
+    if (mode === 'server' && isOwner) ipcRenderer.invoke('server:stop').catch(() => {})
     setAppState('idle')
   }
 
@@ -328,6 +347,32 @@ export default function ChannelPage() {
       peerManagerRef.current?.setMicMuted(prevMicMutedRef.current)
     }
     peerManagerRef.current?.setDeafened(next)
+  }
+
+  async function handleStartServer() {
+    setAppState('connecting')
+    setErrorMsg('')
+    setServerUrl('')
+    try {
+      const result: { port: number; ip: string } = await ipcRenderer.invoke('server:start')
+      const url = `ws://${result.ip}:${result.port}`
+      setServerUrl(url)
+      setIsOwner(true)
+      await connectToChannel(null, true, () => new SignalingClient(url))
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'Не удалось запустить сервер')
+      setAppState('error')
+    }
+  }
+
+  function handleConnectToServer() {
+    const url = serverInput.trim()
+    if (!url) return
+    setAppState('connecting')
+    setErrorMsg('')
+    setServerUrl(url)
+    setIsOwner(false)
+    connectToChannel(null, false, () => new SignalingClient(url))
   }
 
   async function handleStartScreenShare(stream: MediaStream, sourceId: string) {
@@ -412,23 +457,70 @@ export default function ChannelPage() {
           <div className="cp-home-inner">
             <div className="cp-home-logo">R</div>
             <h1 className="cp-home-title">Rawcord</h1>
-            <p className="cp-home-sub">P2P голосовой чат через Steam</p>
-            <div className="cp-home-actions">
-              <button className="cp-action-card" onClick={handleCreateLobby}>
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-                </svg>
-                <span className="cp-action-label">Создать лобби</span>
-                <span className="cp-action-desc">Друзья подключатся к тебе</span>
-              </button>
-              <button className="cp-action-card" onClick={() => { setAppState('browsing'); fetchLobbies() }}>
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-                </svg>
-                <span className="cp-action-label">Найти лобби</span>
-                <span className="cp-action-desc">Войти к другу</span>
-              </button>
+            <p className="cp-home-sub">P2P голосовой чат</p>
+
+            {/* Mode toggle */}
+            <div className="cp-mode-toggle">
+              <button
+                className={`cp-mode-btn${mode === 'steam' ? ' active' : ''}`}
+                onClick={() => setMode('steam')}
+              >Через Steam</button>
+              <button
+                className={`cp-mode-btn${mode === 'server' ? ' active' : ''}`}
+                onClick={() => setMode('server')}
+              >Выделенный сервер</button>
             </div>
+
+            {mode === 'steam' ? (
+              <div className="cp-home-actions">
+                <button className="cp-action-card" onClick={handleCreateLobby}>
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                  </svg>
+                  <span className="cp-action-label">Создать лобби</span>
+                  <span className="cp-action-desc">Друзья подключатся к тебе</span>
+                </button>
+                <button className="cp-action-card" onClick={() => { setAppState('browsing'); fetchLobbies() }}>
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                  </svg>
+                  <span className="cp-action-label">Найти лобби</span>
+                  <span className="cp-action-desc">Войти к другу</span>
+                </button>
+              </div>
+            ) : (
+              <div className="cp-home-actions">
+                <button className="cp-action-card" onClick={handleStartServer}>
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
+                  </svg>
+                  <span className="cp-action-label">Создать сервер</span>
+                  <span className="cp-action-desc">Запустить сервер и ждать подключений</span>
+                </button>
+                <div className="cp-action-card connect-card">
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+                  </svg>
+                  <span className="cp-action-label">Подключиться</span>
+                  <span className="cp-action-desc">Ввести адрес сервера</span>
+                  <div className="connect-input-row">
+                    <input
+                      className="server-url-input"
+                      type="text"
+                      placeholder="ws://192.168.1.100:3001"
+                      value={serverInput}
+                      onChange={e => setServerInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleConnectToServer() }}
+                    />
+                    <button
+                      className="connect-submit-btn"
+                      disabled={!serverInput.trim()}
+                      onClick={handleConnectToServer}
+                    >Подкл.</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <button className="cp-settings-btn" onClick={() => setSettingsOpen(true)}>
             <svg viewBox="0 0 24 24" fill="currentColor">
@@ -614,6 +706,9 @@ export default function ChannelPage() {
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
               </button>
 
+              {serverUrl && (
+                <span className="cp-server-info" title="Адрес сервера">{serverUrl}</span>
+              )}
               <button className="disconnect-btn" onClick={handleDisconnect}>
                 Отключиться
               </button>

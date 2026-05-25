@@ -1767,3 +1767,45 @@ html, body, #root {
 }
 .cp-chat-send:disabled { opacity: 0.4; cursor: default; }
 .cp-chat-send svg { width: 16px; height: 16px; }
+
+/* Mode toggle */
+.cp-mode-toggle {
+  display: flex; gap: 0; margin-bottom: 20px;
+  background: var(--bg-2); border-radius: 8px; padding: 3px;
+}
+.cp-mode-btn {
+  flex: 1; background: transparent; border: none; border-radius: 6px;
+  padding: 7px 16px; font-size: 13px; font-weight: 600; color: var(--text-muted);
+  cursor: pointer; transition: all .15s;
+}
+.cp-mode-btn.active {
+  background: var(--accent); color: #fff;
+}
+
+/* Server connect card */
+.connect-card {
+  flex-direction: column !important; gap: 6px !important; cursor: default !important;
+}
+.connect-card:hover { background: var(--bg-0) !important; }
+.connect-card svg { width: 28px; height: 28px; opacity: .6; }
+.connect-input-row {
+  display: flex; gap: 6px; width: 100%;
+}
+.server-url-input {
+  flex: 1; background: var(--bg-2); border: 1px solid var(--bg-3); border-radius: 6px;
+  padding: 6px 10px; font-size: 13px; color: var(--text-primary); outline: none;
+  font-family: inherit;
+}
+.server-url-input::placeholder { color: var(--text-muted); }
+.server-url-input:focus { border-color: var(--accent); }
+.connect-submit-btn {
+  background: var(--accent); border: none; border-radius: 6px; padding: 6px 14px;
+  font-size: 13px; font-weight: 600; color: #fff; cursor: pointer; white-space: nowrap;
+}
+.connect-submit-btn:disabled { opacity: .4; cursor: default; }
+
+/* Server URL info in controls */
+.cp-server-info {
+  font-size: 11px; color: var(--text-muted); margin-left: auto; padding: 4px 8px;
+  background: var(--bg-2); border-radius: 4px; user-select: all; cursor: text;
+}
