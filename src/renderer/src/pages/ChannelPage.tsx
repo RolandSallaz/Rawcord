@@ -203,7 +203,7 @@ export default function ChannelPage() {
       for (const p of existingPeers) {
         if (p.avatar) peerAvatars.set(p.id, p.avatar)
         try {
-          peerManager.createPeer(p.id, p.nickname, true)
+          peerManager.createPeer(p.id, p.nickname, false)
         } catch (e) {
           console.error('[connect] createPeer error:', e)
         }
