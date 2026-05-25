@@ -547,7 +547,7 @@ export default function ChannelPage() {
             ))}
           </div>
 
-          {/* Screen share previews */}
+          {/* Center: screen share previews + controls */}
           <div className="cp-main">
             {(isSharing || remoteVideoStreams.size > 0) && (
               <div className="cp-previews">
@@ -570,42 +570,6 @@ export default function ChannelPage() {
                 ))}
               </div>
             )}
-
-            {/* Chat */}
-            <div className="cp-chat">
-              <div className="cp-chat-header">Текстовый чат</div>
-              <div className="cp-chat-messages">
-                {chatMessages.length === 0 && (
-                  <div className="cp-chat-empty">Пока нет сообщений</div>
-                )}
-                {chatMessages.map(msg => (
-                  <div key={msg.id} className={`cp-chat-msg${msg.from === 'self' ? ' self' : ''}`}>
-                    <AvatarImg src={msg.avatar} initial={msg.nickname[0] ?? '?'} size={24} />
-                    <div className="cp-chat-msg-body">
-                      <span className="cp-chat-msg-author">{msg.nickname}</span>
-                      <span className="cp-chat-msg-text">{msg.text}</span>
-                    </div>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-              <div className="cp-chat-input-bar">
-                <input
-                  ref={chatInputRef}
-                  className="cp-chat-input"
-                  type="text"
-                  placeholder="Написать сообщение…"
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleSendChat() }}
-                />
-                <button className="cp-chat-send" onClick={handleSendChat} disabled={!chatInput.trim()}>
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-                  </svg>
-                </button>
-              </div>
-            </div>
 
             {/* Controls */}
             <div className="cp-controls">
@@ -652,6 +616,42 @@ export default function ChannelPage() {
 
               <button className="disconnect-btn" onClick={handleDisconnect}>
                 Отключиться
+              </button>
+            </div>
+          </div>
+
+          {/* Chat sidebar */}
+          <div className="cp-chat">
+            <div className="cp-chat-header">Текстовый чат</div>
+            <div className="cp-chat-messages">
+              {chatMessages.length === 0 && (
+                <div className="cp-chat-empty">Пока нет сообщений</div>
+              )}
+              {chatMessages.map(msg => (
+                <div key={msg.id} className={`cp-chat-msg${msg.from === 'self' ? ' self' : ''}`}>
+                  <AvatarImg src={msg.avatar} initial={msg.nickname[0] ?? '?'} size={24} />
+                  <div className="cp-chat-msg-body">
+                    <span className="cp-chat-msg-author">{msg.nickname}</span>
+                    <span className="cp-chat-msg-text">{msg.text}</span>
+                  </div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="cp-chat-input-bar">
+              <input
+                ref={chatInputRef}
+                className="cp-chat-input"
+                type="text"
+                placeholder="Написать сообщение…"
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSendChat() }}
+              />
+              <button className="cp-chat-send" onClick={handleSendChat} disabled={!chatInput.trim()}>
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                </svg>
               </button>
             </div>
           </div>

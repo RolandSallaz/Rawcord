@@ -56,7 +56,10 @@ export class SteamSignalingClient {
         } else if (msg.type === 'relay') {
           this.handlers.onRelay?.(from, msg.payload as RelayPayload)
         } else if (msg.type === 'chat') {
+          console.log('[SteamSignaling] chat received from', from.slice(-6), ':', (msg.text as string)?.slice(0, 50))
           this.handlers.onChat?.(from, msg.text as string, msg.nickname as string || from.slice(-6), msg.avatar as string | undefined)
+        } else {
+          console.log('[SteamSignaling] unknown msg type:', msg.type)
         }
       } catch (e) {
         console.error('[SteamSignaling] msgListener error:', e)
@@ -115,6 +118,7 @@ export class SteamSignalingClient {
   }
 
   sendChat(text: string) {
+    console.log('[SteamSignaling] sendChat, seenPeers:', this.seenPeers.size, [...this.seenPeers.keys()].map(k => k.slice(-6)))
     for (const peerId of this.seenPeers.keys()) {
       this.sendMsg(peerId, { type: 'chat', text, nickname: this.myNickname, avatar: this.myAvatar })
     }
