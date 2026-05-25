@@ -209,7 +209,7 @@ export default function ChannelPage() {
 
     signaling.on('onPeerJoined', (peer) => {
       if (peer.avatar) peerAvatars.set(peer.id, peer.avatar)
-      peerManager.createPeer(peer.id, peer.nickname, true)
+      peerManager.createPeer(peer.id, peer.nickname, false)
       setPeers(prev => {
         if (prev.some(p => p.id === peer.id)) return prev
         return [...prev, peer]
