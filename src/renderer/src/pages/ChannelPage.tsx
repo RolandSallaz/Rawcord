@@ -67,6 +67,7 @@ export default function ChannelPage() {
 
   const [serverUrl, setServerUrl] = useState('')
   const [serverInput, setServerInput] = useState('')
+  const [serverPort, setServerPort] = useState('3001')
 
   const [peers, setPeers] = useState<PeerInfo[]>([])
   const [micMuted, setMicMuted] = useState(false)
@@ -353,26 +354,40 @@ export default function ChannelPage() {
     setAppState('connecting')
     setErrorMsg('')
     setServerUrl('')
+    const port = parseInt(serverPort, 10)
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      setErrorMsg('Укажите порт от 1024 до 65535')
+      setAppState('error')
+      return
+    }
     try {
-      const result: { port: number; ip: string } = await ipcRenderer.invoke('server:start')
+      const result: { port: number; ip: string } = await ipcRenderer.invoke('server:start', port)
       const url = `ws://${result.ip}:${result.port}`
       setServerUrl(url)
       setIsOwner(true)
       await connectToChannel(null, true, () => new SignalingClient(url))
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : 'Не удалось запустить сервер')
+      const msg = e instanceof Error ? e.message : ''
+      if (msg.includes('EADDRINUSE') || msg.includes('already in use')) {
+        setErrorMsg(`Порт ${serverPort} уже занят. Укажите другой порт.`)
+      } else {
+        setErrorMsg(msg || 'Не удалось запустить сервер')
+      }
       setAppState('error')
     }
   }
 
   function handleConnectToServer() {
-    const url = serverInput.trim()
-    if (!url) return
+    let input = serverInput.trim()
+    if (!input) return
+    if (!input.startsWith('ws://') && !input.startsWith('wss://')) {
+      input = `ws://${input}`
+    }
     setAppState('connecting')
     setErrorMsg('')
-    setServerUrl(url)
+    setServerUrl(input)
     setIsOwner(false)
-    connectToChannel(null, false, () => new SignalingClient(url))
+    connectToChannel(null, false, () => new SignalingClient(input))
   }
 
   async function handleStartScreenShare(stream: MediaStream, sourceId: string) {
@@ -490,24 +505,38 @@ export default function ChannelPage() {
               </div>
             ) : (
               <div className="cp-home-actions">
-                <button className="cp-action-card" onClick={handleStartServer}>
+                <div className="cp-action-card create-server-card">
                   <svg viewBox="0 0 24 24" fill="currentColor">
                     <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
                   </svg>
                   <span className="cp-action-label">Создать сервер</span>
                   <span className="cp-action-desc">Запустить сервер и ждать подключений</span>
-                </button>
+                  <div className="connect-input-row">
+                    <span className="port-label">Порт:</span>
+                    <input
+                      className="server-url-input port-input"
+                      type="number"
+                      min="1024"
+                      max="65535"
+                      placeholder="3001"
+                      value={serverPort}
+                      onChange={e => setServerPort(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleStartServer() }}
+                    />
+                    <button className="connect-submit-btn" onClick={handleStartServer}>Создать</button>
+                  </div>
+                </div>
                 <div className="cp-action-card connect-card">
                   <svg viewBox="0 0 24 24" fill="currentColor">
                     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
                   </svg>
                   <span className="cp-action-label">Подключиться</span>
-                  <span className="cp-action-desc">Ввести адрес сервера</span>
+                  <span className="cp-action-desc">Ввести IP:Порт сервера</span>
                   <div className="connect-input-row">
                     <input
                       className="server-url-input"
                       type="text"
-                      placeholder="ws://192.168.1.100:3001"
+                      placeholder="192.168.1.100:3001"
                       value={serverInput}
                       onChange={e => setServerInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') handleConnectToServer() }}

@@ -1788,6 +1788,20 @@ html, body, #root {
 }
 .connect-card:hover { background: var(--bg-0) !important; }
 .connect-card svg { width: 28px; height: 28px; opacity: .6; }
+
+/* Create server card with port input */
+.create-server-card {
+  flex-direction: column !important; gap: 6px !important; cursor: default !important;
+}
+.create-server-card:hover { background: var(--bg-0) !important; }
+.create-server-card svg { width: 28px; height: 28px; opacity: .6; }
+.port-label {
+  font-size: 13px; color: var(--text-muted); white-space: nowrap; align-self: center;
+}
+.port-input {
+  max-width: 100px; flex: 0 0 auto !important;
+}
+
 .connect-input-row {
   display: flex; gap: 6px; width: 100%;
 }
