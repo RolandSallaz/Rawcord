@@ -1,6 +1,6 @@
 {
   "name": "rawcord",
-  "version": "0.6.10",
+  "version": "0.6.11",
   "description": "P2P Discord analog",
   "main": "out/main/index.js",
   "scripts": {
