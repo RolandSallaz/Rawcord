@@ -14,6 +14,15 @@ const { ipcRenderer } = (window as any).require('electron')
 
 type AppState = 'idle' | 'browsing' | 'connecting' | 'connected' | 'error'
 
+interface ChatMessage {
+  id: string
+  from: string
+  text: string
+  nickname: string
+  avatar?: string
+  timestamp: number
+}
+
 interface LobbyEntry {
   lobbyId: string
   owner: string
@@ -55,12 +64,18 @@ export default function ChannelPage() {
   const [profileCard, setProfileCard] = useState<{ peer: PeerInfo; anchor: DOMRect } | null>(null)
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const chatEndRef = useRef<HTMLDivElement>(null)
+  const chatInputRef = useRef<HTMLInputElement>(null)
 
   const signalingRef = useRef<SteamSignalingClient | null>(null)
   const peerManagerRef = useRef<PeerManager | null>(null)
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
   const prevMicMutedRef = useRef(false)
   const localVadRef = useRef<{ ctx: AudioContext; interval: ReturnType<typeof setInterval> } | null>(null)
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
 
   useEffect(() => { return () => { cleanup() } }, [])
 
@@ -187,17 +202,18 @@ export default function ChannelPage() {
     peerManager.setStream(stream)
     peerManager.setOutputDevice(settings.outputDeviceId)
 
-    const peerAvatars = new Map<string, string>()
+    const peerInfo = new Map<string, PeerInfo>()
 
     peerManager.onPeersChanged = () => {
       setPeers(prev =>
-        peerManager.getPeerIds().map(id => ({
-          id,
-          nickname: peerAvatars.get(id) !== undefined
-            ? (prev.find(p => p.id === id)?.nickname ?? id.slice(0, 8))
-            : id.slice(0, 8),
-          avatar: peerAvatars.get(id),
-        }))
+        peerManager.getPeerIds().map(id => {
+          const info = peerInfo.get(id)
+          return {
+            id,
+            nickname: info?.nickname ?? (prev.find(p => p.id === id)?.nickname ?? id.slice(0, 8)),
+            avatar: info?.avatar,
+          }
+        })
       )
     }
     peerManager.onSharingChanged = (set) => setRemoteSharingPeers(new Set(set))
@@ -210,37 +226,49 @@ export default function ChannelPage() {
 
     signaling.on('onPeers', (existingPeers) => {
       for (const p of existingPeers) {
-        if (p.avatar) peerAvatars.set(p.id, p.avatar)
+        peerInfo.set(p.id, p)
         peerManager.createPeer(p.id, p.nickname, false)
       }
       setPeers(existingPeers.map(p => ({ ...p })))
     })
     signaling.on('onPeerJoined', (peer) => {
-      if (peer.avatar) peerAvatars.set(peer.id, peer.avatar)
+      peerInfo.set(peer.id, peer)
       peerManager.createPeer(peer.id, peer.nickname, true)
       setPeers(prev => prev.some(p => p.id === peer.id) ? prev : [...prev, peer])
     })
     signaling.on('onPeerUpdated', (peer) => {
-      if (peer.avatar) peerAvatars.set(peer.id, peer.avatar)
+      peerInfo.set(peer.id, peer)
+      peerManager.updatePeerNickname(peer.id, peer.nickname)
       setPeers(prev => prev.map(p => p.id === peer.id ? { ...p, ...peer } : p))
     })
     signaling.on('onPeerLeft', (id) => {
-      peerAvatars.delete(id)
+      peerInfo.delete(id)
       peerManager.removePeer(id)
       setPeers(prev => prev.filter(p => p.id !== id))
     })
     signaling.on('onRelay', (from, payload) => {
       if (!peerManager.getPeerIds().includes(from)) {
-        const nick = peerAvatars.get(from) ? (peerAvatars.get(from) as string) : from.slice(0, 8)
-        peerManager.createPeer(from, nick, false)
+        const info = peerInfo.get(from)
+        peerManager.createPeer(from, info?.nickname ?? from.slice(0, 8), false)
       }
       peerManager.signal(from, payload as object)
+    })
+    signaling.on('onChat', (from, text, nickname, avatar) => {
+      setChatMessages(prev => [...prev, {
+        id: `${from}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        from,
+        text,
+        nickname,
+        avatar,
+        timestamp: Date.now(),
+      }])
     })
     signaling.on('onClose', () => {
       cleanup()
       setAppState('idle')
       setPeers([])
       setCurrentLobbyId(null)
+      setChatMessages([])
     })
 
     try {
@@ -313,6 +341,21 @@ export default function ChannelPage() {
     } catch { stream.getTracks().forEach(t => t.stop()) }
   }
 
+  function handleSendChat() {
+    const text = chatInput.trim()
+    if (!text) return
+    signalingRef.current?.sendChat(text)
+    setChatMessages(prev => [...prev, {
+      id: `self-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      from: 'self',
+      text,
+      nickname: profile.nickname,
+      avatar: profile.avatar || undefined,
+      timestamp: Date.now(),
+    }])
+    setChatInput('')
+  }
+
   function handleStopScreenShare() {
     peerManagerRef.current?.stopScreenShare()
     localScreenStream?.getTracks().forEach(t => t.stop())
@@ -333,7 +376,7 @@ export default function ChannelPage() {
           settings={settings}
           profile={profile}
           onChange={s => { setSettings(s); saveSettings(s); peerManagerRef.current?.setOutputDevice(s.outputDeviceId) }}
-          onProfileChange={p => { saveProfile(p); setProfile(p) }}
+          onProfileChange={p => { saveProfile(p); setProfile(p); signalingRef.current?.updateProfile(p.nickname, p.avatar || undefined) }}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -527,6 +570,42 @@ export default function ChannelPage() {
                 ))}
               </div>
             )}
+
+            {/* Chat */}
+            <div className="cp-chat">
+              <div className="cp-chat-header">Текстовый чат</div>
+              <div className="cp-chat-messages">
+                {chatMessages.length === 0 && (
+                  <div className="cp-chat-empty">Пока нет сообщений</div>
+                )}
+                {chatMessages.map(msg => (
+                  <div key={msg.id} className={`cp-chat-msg${msg.from === 'self' ? ' self' : ''}`}>
+                    <AvatarImg src={msg.avatar} initial={msg.nickname[0] ?? '?'} size={24} />
+                    <div className="cp-chat-msg-body">
+                      <span className="cp-chat-msg-author">{msg.nickname}</span>
+                      <span className="cp-chat-msg-text">{msg.text}</span>
+                    </div>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+              <div className="cp-chat-input-bar">
+                <input
+                  ref={chatInputRef}
+                  className="cp-chat-input"
+                  type="text"
+                  placeholder="Написать сообщение…"
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSendChat() }}
+                />
+                <button className="cp-chat-send" onClick={handleSendChat} disabled={!chatInput.trim()}>
+                  <svg viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
 
             {/* Controls */}
             <div className="cp-controls">

@@ -12,6 +12,7 @@ interface SteamSignalingHandlers {
   onRelay: (from: string, payload: RelayPayload) => void
   onClose: () => void
   onPeerUpdated: (peer: PeerInfo) => void
+  onChat: (from: string, text: string, nickname: string, avatar?: string) => void
 }
 
 export class SteamSignalingClient {
@@ -54,6 +55,8 @@ export class SteamSignalingClient {
           }
         } else if (msg.type === 'relay') {
           this.handlers.onRelay?.(from, msg.payload as RelayPayload)
+        } else if (msg.type === 'chat') {
+          this.handlers.onChat?.(from, msg.text as string, msg.nickname as string || from.slice(-6), msg.avatar as string | undefined)
         }
       } catch (e) {
         console.error('[SteamSignaling] msgListener error:', e)
@@ -109,6 +112,20 @@ export class SteamSignalingClient {
 
   relay(to: string, payload: RelayPayload) {
     this.sendMsg(to, { type: 'relay', payload })
+  }
+
+  sendChat(text: string) {
+    for (const peerId of this.seenPeers.keys()) {
+      this.sendMsg(peerId, { type: 'chat', text, nickname: this.myNickname, avatar: this.myAvatar })
+    }
+  }
+
+  updateProfile(nickname: string, avatar?: string) {
+    this.myNickname = nickname
+    this.myAvatar = avatar
+    for (const peerId of this.seenPeers.keys()) {
+      this.sendMsg(peerId, { type: 'announce', nickname, avatar })
+    }
   }
 
   leave() {

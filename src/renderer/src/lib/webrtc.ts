@@ -159,6 +159,11 @@ export class PeerManager {
     this.screenTrack = null
   }
 
+  updatePeerNickname(peerId: string, nickname: string) {
+    this.peerNicknames.set(peerId, nickname)
+    this.notifyChanged()
+  }
+
   signal(peerId: string, data: object) {
     const peer = this.peers.get(peerId)
     if (peer && !peer.destroyed) {
