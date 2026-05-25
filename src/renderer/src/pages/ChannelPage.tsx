@@ -202,14 +202,22 @@ export default function ChannelPage() {
     signaling.on('onPeers', (existingPeers) => {
       for (const p of existingPeers) {
         if (p.avatar) peerAvatars.set(p.id, p.avatar)
-        peerManager.createPeer(p.id, p.nickname, true)
+        try {
+          peerManager.createPeer(p.id, p.nickname, true)
+        } catch (e) {
+          console.error('[connect] createPeer error:', e)
+        }
       }
       setPeers(existingPeers.map(p => ({ ...p })))
     })
 
     signaling.on('onPeerJoined', (peer) => {
       if (peer.avatar) peerAvatars.set(peer.id, peer.avatar)
-      peerManager.createPeer(peer.id, peer.nickname, false)
+      try {
+        peerManager.createPeer(peer.id, peer.nickname, false)
+      } catch (e) {
+        console.error('[connect] createPeer error:', e)
+      }
       setPeers(prev => {
         if (prev.some(p => p.id === peer.id)) return prev
         return [...prev, peer]

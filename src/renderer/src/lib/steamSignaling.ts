@@ -34,25 +34,29 @@ export class SteamSignalingClient {
       let msg: Record<string, unknown>
       try { msg = JSON.parse(data) } catch { return }
 
-      if (msg.type === 'announce') {
-        const peer: PeerInfo = {
-          id: from,
-          nickname: (msg.nickname as string) || from.slice(-6),
-          avatar: msg.avatar as string | undefined,
+      try {
+        if (msg.type === 'announce') {
+          const peer: PeerInfo = {
+            id: from,
+            nickname: (msg.nickname as string) || from.slice(-6),
+            avatar: msg.avatar as string | undefined,
+          }
+          if (this.seenPeers.has(from)) {
+            this.seenPeers.set(from, peer)
+            this.handlers.onPeerUpdated?.(peer)
+          } else {
+            this.seenPeers.set(from, peer)
+            this.handlers.onPeerJoined?.(peer)
+          }
+          // Reply with our own info so they know who we are
+          if (this.myNickname) {
+            this.sendMsg(from, { type: 'announce', nickname: this.myNickname, avatar: this.myAvatar })
+          }
+        } else if (msg.type === 'relay') {
+          this.handlers.onRelay?.(from, msg.payload as RelayPayload)
         }
-        if (this.seenPeers.has(from)) {
-          this.seenPeers.set(from, peer)
-          this.handlers.onPeerUpdated?.(peer)
-        } else {
-          this.seenPeers.set(from, peer)
-          this.handlers.onPeerJoined?.(peer)
-        }
-        // Reply with our own info so they know who we are
-        if (this.myNickname) {
-          this.sendMsg(from, { type: 'announce', nickname: this.myNickname, avatar: this.myAvatar })
-        }
-      } else if (msg.type === 'relay') {
-        this.handlers.onRelay?.(from, msg.payload as RelayPayload)
+      } catch (e) {
+        console.error('[SteamSignaling] msgListener error:', e)
       }
     }
 
@@ -60,7 +64,11 @@ export class SteamSignalingClient {
       if (this.seenPeers.has(steamId)) return
       const peer: PeerInfo = { id: steamId, nickname: name || steamId.slice(-6), avatar: undefined }
       this.seenPeers.set(steamId, peer)
-      this.handlers.onPeerJoined?.(peer)
+      try {
+        this.handlers.onPeerJoined?.(peer)
+      } catch (e) {
+        console.error('[SteamSignaling] onPeerJoined error:', e)
+      }
       // Send our announce so they know who we are
       if (this.myNickname) {
         this.sendMsg(steamId, { type: 'announce', nickname: this.myNickname, avatar: this.myAvatar })
@@ -84,7 +92,11 @@ export class SteamSignalingClient {
       this.seenPeers.set(m.steamId, peer)
     }
 
-    this.handlers.onPeers?.([...this.seenPeers.values()])
+    try {
+      this.handlers.onPeers?.([...this.seenPeers.values()])
+    } catch (e) {
+      console.error('[SteamSignaling] onPeers error:', e)
+    }
   }
 
   join(_channel: string, nickname: string, avatar?: string) {
