@@ -28,6 +28,7 @@ export class PeerManager {
 
   onPeersChanged: (peers: PeerState[]) => void = () => {}
   onRemoteVideo: (peerId: string, track: MediaStreamTrack, streams: readonly MediaStream[]) => void = () => {}
+  onRemoteVideoEnded: (peerId: string) => void = () => {}
   onSharingChanged: (sharingPeerIds: Set<string>) => void = () => {}
   onSpeakingChanged: (speaking: Set<string>) => void = () => {}
 
@@ -93,6 +94,11 @@ export class PeerManager {
         this.sharingPeers.add(peerId)
         this.onSharingChanged(new Set(this.sharingPeers))
         this.onRemoteVideo(peerId, videoTracks[0], [remoteStream])
+        videoTracks[0].onended = () => {
+          this.sharingPeers.delete(peerId)
+          this.onSharingChanged(new Set(this.sharingPeers))
+          this.onRemoteVideoEnded(peerId)
+        }
       }
     })
 
@@ -105,6 +111,7 @@ export class PeerManager {
         track.onended = () => {
           this.sharingPeers.delete(peerId)
           this.onSharingChanged(new Set(this.sharingPeers))
+          this.onRemoteVideoEnded(peerId)
         }
       }
     })
@@ -115,10 +122,8 @@ export class PeerManager {
     this.peers.set(peerId, peer)
 
     // If we are already sharing, immediately add the screen track to this new peer.
-    // SimplePeer initialises _pc synchronously, so this is safe right after construction.
     if (this.screenTrack && this.screenStream) {
-      const pc = (peer as unknown as { _pc: RTCPeerConnection })._pc
-      pc.addTrack(this.screenTrack, this.screenStream)
+      peer.addTrack(this.screenTrack, this.screenStream)
     }
 
     this.notifyChanged()
@@ -133,9 +138,7 @@ export class PeerManager {
 
     for (const [, peer] of this.peers) {
       if (peer.destroyed) continue
-      const pc = (peer as unknown as { _pc: RTCPeerConnection })._pc
-      pc.addTrack(track, stream)
-      // onnegotiationneeded fires automatically → SimplePeer emits 'signal' → relay
+      peer.addTrack(track, stream)
     }
 
     // Handle user stopping via OS "Stop sharing" button
@@ -145,12 +148,11 @@ export class PeerManager {
   stopScreenShare(): void {
     if (!this.screenTrack) return
     const t = this.screenTrack
+    const s = this.screenStream
 
     for (const [, peer] of this.peers) {
       if (peer.destroyed) continue
-      const pc = (peer as unknown as { _pc: RTCPeerConnection })._pc
-      const sender = pc.getSenders().find(s => s.track === t)
-      if (sender) pc.removeTrack(sender)
+      if (s) peer.removeTrack(t, s)
     }
 
     t.stop()

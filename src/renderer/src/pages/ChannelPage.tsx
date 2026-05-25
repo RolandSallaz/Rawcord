@@ -80,6 +80,7 @@ export default function ChannelPage() {
   const [profileCard, setProfileCard] = useState<{ peer: PeerInfo; anchor: DOMRect } | null>(null)
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [streamNotification, setStreamNotification] = useState<string | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -90,6 +91,7 @@ export default function ChannelPage() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
   const prevMicMutedRef = useRef(false)
   const localVadRef = useRef<{ ctx: AudioContext; interval: ReturnType<typeof setInterval> } | null>(null)
+  const prevSharingRef = useRef<Set<string>>(new Set())
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
 
@@ -232,12 +234,26 @@ export default function ChannelPage() {
         })
       )
     }
-    peerManager.onSharingChanged = (set) => setRemoteSharingPeers(new Set(set))
+    peerManager.onSharingChanged = (set) => {
+      setRemoteSharingPeers(prev => {
+        for (const id of set) {
+          if (!prev.has(id)) {
+            const name = peerInfo.get(id)?.nickname ?? id.slice(0, 8)
+            setStreamNotification(`${name} начал(а) трансляцию`)
+            setTimeout(() => setStreamNotification(null), 4000)
+          }
+        }
+        return new Set(set)
+      })
+    }
     peerManager.onSpeakingChanged = (set) => setSpeakingPeers(new Set(set))
-    peerManager.onRemoteVideo = (peerId, track, streams) => {
-      const videoStream = streams[0] ?? new MediaStream([track])
+    peerManager.onRemoteVideo = (peerId, _track, streams) => {
+      const videoStream = streams[0] ?? new MediaStream()
       setRemoteVideoStreams(prev => new Map(prev).set(peerId, videoStream))
-      track.onended = () => setRemoteVideoStreams(prev => { const m = new Map(prev); m.delete(peerId); return m })
+    }
+    peerManager.onRemoteVideoEnded = (peerId) => {
+      setRemoteVideoStreams(prev => { const m = new Map(prev); m.delete(peerId); return m })
+      setRemoteSharingPeers(prev => { const m = new Set(prev); m.delete(peerId); return m })
     }
 
     signaling.on('onPeers', (existingPeers: PeerInfo[]) => {
@@ -628,6 +644,9 @@ export default function ChannelPage() {
       {/* ── CONNECTED ── */}
       {appState === 'connected' && !watchingPeerId && (
         <div className="cp-connected">
+          {streamNotification && (
+            <div className="ss-notification">{streamNotification}</div>
+          )}
           {/* Participants */}
           <div className="cp-participants">
             <div className="cp-participants-label">В ГОЛОСОВОМ</div>
