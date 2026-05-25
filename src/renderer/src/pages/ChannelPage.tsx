@@ -301,7 +301,7 @@ export default function ChannelPage() {
 
     signalingRef.current = signaling
     peerManagerRef.current = peerManager
-    signaling.join('', profile.nickname, profile.avatar || undefined)
+    signaling.join('voice', profile.nickname, profile.avatar || undefined)
     setAppState('connected')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, profile, mode])
