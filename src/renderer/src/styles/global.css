@@ -1557,3 +1557,43 @@ html, body, #root {
 }
 .sv-exit-btn:hover { background: var(--red); }
 .sv-exit-btn svg { width: 16px; height: 16px; }
+
+/* ─── LOBBY BROWSER ────────────────────────────────────── */
+.lobby-browser { display: flex; flex-direction: column; gap: 10px; }
+
+.lobby-browser-header {
+  display: flex; align-items: center; gap: 8px;
+}
+
+.lobby-refresh-btn {
+  background: var(--bg-3); border: 1px solid var(--bg-4); border-radius: 4px;
+  color: var(--text-secondary); cursor: pointer; padding: 5px 8px;
+  display: flex; align-items: center; transition: background .12s;
+}
+.lobby-refresh-btn:hover { background: var(--bg-4); }
+.lobby-refresh-btn:disabled { opacity: .5; cursor: default; }
+
+.lobby-list { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; }
+
+.lobby-entry {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; background: var(--bg-3); border-radius: 6px;
+  border: 1px solid var(--bg-4);
+}
+
+.lobby-entry-info { display: flex; flex-direction: column; gap: 2px; }
+
+.lobby-entry-owner {
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+}
+
+.lobby-entry-count {
+  font-size: 12px; color: var(--text-secondary);
+}
+
+.choice-spinner {
+  width: 14px; height: 14px; border: 2px solid var(--bg-4);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .7s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

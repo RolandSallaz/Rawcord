@@ -88,10 +88,44 @@ export function setupSteamIPC() {
     activeLobby = lobby
     startMsgPoll()
     const lobbyId = (lobby.id as bigint).toString()
-    // Rich presence so Steam friends can join with one click
+    const ownerName = client.localplayer.getName() as string
+    try {
+      lobby.setData('rawcord', '1')
+      lobby.setData('owner', ownerName)
+    } catch {}
     client.localplayer.setRichPresence('connect', `+lobby ${lobbyId}`)
     client.localplayer.setRichPresence('steam_display', '#Status_InLobby')
     return lobbyId
+  })
+
+  ipcMain.handle('steam:getLobbies', async () => {
+    if (!client) return []
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lobbies: any[] = await client.matchmaking.getLobbies()
+      return lobbies
+        .filter((l) => l.getData('rawcord') === '1')
+        .map((l) => ({
+          lobbyId: (l.id as bigint).toString(),
+          owner: (l.getData('owner') as string) || '?',
+          members: Number(l.getMemberCount()),
+          maxMembers: Number(l.getMemberLimit() ?? 20),
+        }))
+    } catch (e) {
+      console.warn('[Steam] getLobbies error:', e)
+      return []
+    }
+  })
+
+  ipcMain.handle('steam:inviteFriends', () => {
+    if (!client || !activeLobby) return
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const overlay = (client as any).overlay ?? (require('steamworks.js') as any).overlay
+      overlay.activateInviteDialog(activeLobby.id)
+    } catch (e) {
+      console.warn('[Steam] inviteFriends error:', e)
+    }
   })
 
   ipcMain.handle('steam:joinLobby', async (_e, lobbyIdStr: string) => {

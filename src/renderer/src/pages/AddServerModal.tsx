@@ -4,22 +4,26 @@ import type { SavedServer } from '../lib/servers'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { ipcRenderer } = (window as any).require('electron')
 
+interface LobbyEntry {
+  lobbyId: string
+  owner: string
+  members: number
+  maxMembers: number
+}
+
 interface Props {
   onAdd: (server: SavedServer) => void
   onClose: () => void
 }
 
-type Mode = 'choose' | 'creating' | 'created' | 'joining'
+type Mode = 'choose' | 'creating' | 'browse'
 
 export default function AddServerModal({ onAdd, onClose }: Props) {
   const [mode, setMode] = useState<Mode>('choose')
   const [steamAvailable, setSteamAvailable] = useState<boolean | null>(null)
-  const [lobbyId, setLobbyId] = useState('')
-  const [serverName, setServerName] = useState('')
-  const [joinId, setJoinId] = useState('')
-  const [joinName, setJoinName] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [lobbies, setLobbies] = useState<LobbyEntry[]>([])
+  const [loadingLobbies, setLoadingLobbies] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const overlayRef = useRef<HTMLDivElement>(null)
 
@@ -27,56 +31,57 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
     ipcRenderer.invoke('steam:available').then((ok: boolean) => setSteamAvailable(ok))
   }, [])
 
-  async function handleCreateLobby(e: FormEvent) {
-    e.preventDefault()
-    setLoading(true)
+  async function fetchLobbies() {
+    setLoadingLobbies(true)
     setError('')
     try {
-      const id: string = await ipcRenderer.invoke('steam:createLobby')
-      setLobbyId(id)
-      setServerName(`Lobby ${id.slice(-6)}`)
-      setMode('created')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ошибка создания лобби')
+      const list: LobbyEntry[] = await ipcRenderer.invoke('steam:getLobbies')
+      setLobbies(list)
+    } catch {
+      setError('Не удалось загрузить список лобби')
     } finally {
-      setLoading(false)
+      setLoadingLobbies(false)
     }
   }
 
-  function handleCopy() {
-    navigator.clipboard.writeText(lobbyId)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  function handleBrowse() {
+    setMode('browse')
+    fetchLobbies()
   }
 
-  function handleSubmitCreated(e: FormEvent) {
+  async function handleCreate(e: FormEvent) {
     e.preventDefault()
-    const name = serverName.trim() || `Lobby ${lobbyId.slice(-6)}`
-    onAdd({ id: crypto.randomUUID(), name, lobbyId, isOwner: true })
+    setCreating(true)
+    setError('')
+    try {
+      const lobbyId: string = await ipcRenderer.invoke('steam:createLobby')
+      onAdd({
+        id: crypto.randomUUID(),
+        name: 'Моё лобби',
+        lobbyId,
+        isOwner: true,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка создания лобби')
+      setCreating(false)
+    }
   }
 
-  function handleSubmitJoin(e: FormEvent) {
-    e.preventDefault()
-    const id = joinId.trim()
-    if (!id) return
-    const name = joinName.trim() || `Lobby ${id.slice(-6)}`
-    onAdd({ id: crypto.randomUUID(), name, lobbyId: id, isOwner: false })
+  function handleJoin(entry: LobbyEntry) {
+    onAdd({
+      id: crypto.randomUUID(),
+      name: `${entry.owner}'s lobby`,
+      lobbyId: entry.lobbyId,
+      isOwner: false,
+    })
   }
 
   function handleBack() {
-    if (mode === 'created') {
-      ipcRenderer.invoke('steam:leaveLobby').catch(() => {})
-      setLobbyId('')
-    }
     setMode('choose')
-    setServerName('')
-    setJoinId('')
-    setJoinName('')
     setError('')
   }
 
   function handleClose() {
-    if (mode === 'created') ipcRenderer.invoke('steam:leaveLobby').catch(() => {})
     onClose()
   }
 
@@ -102,121 +107,78 @@ export default function AddServerModal({ onAdd, onClose }: Props) {
               Steam недоступен. Запусти приложение через Steam.
             </p>
           )}
+          {error && <p className="settings-hint" style={{ color: 'var(--red)' }}>{error}</p>}
 
           {mode === 'choose' && (
             <div className="add-server-choices">
-              <button
-                className="lobby-choice-btn"
-                disabled={!steamAvailable}
-                onClick={() => setMode('creating')}
-              >
+              <button className="lobby-choice-btn" disabled={!steamAvailable} onClick={handleCreate}>
                 <div className="choice-icon">
                   <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 11H4v-2h11v2zm3-4H4V9h14v2z"/>
+                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                   </svg>
                 </div>
                 <div className="choice-text">
-                  <span className="choice-title">Создать лобби Steam</span>
-                  <span className="choice-desc">Поделись ID лобби с друзьями</span>
+                  <span className="choice-title">Создать лобби</span>
+                  <span className="choice-desc">Друзья смогут найти тебя в списке</span>
                 </div>
+                {creating && <span className="choice-spinner" />}
               </button>
-              <button
-                className="lobby-choice-btn"
-                disabled={!steamAvailable}
-                onClick={() => setMode('joining')}
-              >
+              <button className="lobby-choice-btn" disabled={!steamAvailable} onClick={handleBrowse}>
                 <div className="choice-icon">
                   <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+                    <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
                   </svg>
                 </div>
                 <div className="choice-text">
-                  <span className="choice-title">Войти в лобби</span>
-                  <span className="choice-desc">Введи ID лобби</span>
+                  <span className="choice-title">Найти лобби</span>
+                  <span className="choice-desc">Посмотреть активные лобби</span>
                 </div>
               </button>
             </div>
           )}
 
-          {mode === 'creating' && (
-            <form className="add-server-form" onSubmit={handleCreateLobby}>
-              <p className="settings-hint">Создаётся Steam лобби — другие игроки смогут подключиться через Steam или по ID.</p>
-              {error && <p className="settings-hint" style={{ color: 'var(--red)' }}>{error}</p>}
-              <div className="add-server-actions">
-                <button type="button" className="lobby-back-btn" onClick={handleBack}>← Назад</button>
-                <button type="submit" className="connect-btn" disabled={loading}>
-                  {loading ? 'Создание…' : 'Создать лобби'}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {mode === 'created' && (
-            <form className="add-server-form" onSubmit={handleSubmitCreated}>
-              <div className="settings-row">
-                <span className="settings-label">ID лобби</span>
-                <div className="hosting-address">
-                  <span className="address-text">{lobbyId}</span>
-                  <button type="button" className="copy-btn" onClick={handleCopy}>
-                    {copied ? '✓' : 'Скопировать'}
-                  </button>
-                </div>
-              </div>
-              <div className="settings-row">
-                <label className="settings-label" htmlFor="srv-name-host">Название</label>
-                <input
-                  id="srv-name-host"
-                  className="settings-input"
-                  type="text"
-                  placeholder={`Lobby ${lobbyId.slice(-6)}`}
-                  value={serverName}
-                  onChange={e => setServerName(e.target.value)}
-                />
-              </div>
-              <div className="add-server-actions">
-                <button type="button" className="lobby-back-btn" onClick={handleBack}>← Назад</button>
-                <button type="submit" className="connect-btn">Добавить и войти</button>
-              </div>
-            </form>
-          )}
-
-          {mode === 'joining' && (
-            <form className="add-server-form" onSubmit={handleSubmitJoin}>
-              <div className="settings-row">
-                <label className="settings-label" htmlFor="join-id">ID лобби</label>
-                <input
-                  id="join-id"
-                  autoFocus
-                  className="settings-input"
-                  type="text"
-                  placeholder="109775241747550193"
-                  value={joinId}
-                  onChange={e => setJoinId(e.target.value)}
-                  spellCheck={false}
-                />
-              </div>
-              <div className="settings-row">
-                <label className="settings-label" htmlFor="srv-name-join">Название</label>
-                <input
-                  id="srv-name-join"
-                  className="settings-input"
-                  type="text"
-                  placeholder={joinId ? `Lobby ${joinId.slice(-6)}` : 'Моё лобби'}
-                  value={joinName}
-                  onChange={e => setJoinName(e.target.value)}
-                />
-              </div>
-              <div className="add-server-actions">
-                <button type="button" className="lobby-back-btn" onClick={handleBack}>← Назад</button>
+          {mode === 'browse' && (
+            <div className="lobby-browser">
+              <div className="lobby-browser-header">
+                <button className="lobby-back-btn" onClick={handleBack}>← Назад</button>
                 <button
-                  type="submit"
-                  className="connect-btn"
-                  disabled={joinId.trim().length < 5}
+                  className="lobby-refresh-btn"
+                  onClick={fetchLobbies}
+                  disabled={loadingLobbies}
+                  title="Обновить"
                 >
-                  Добавить и войти
+                  <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 16, height: 16 }}>
+                    <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                  </svg>
                 </button>
               </div>
-            </form>
+
+              {loadingLobbies && <p className="settings-hint">Поиск лобби…</p>}
+
+              {!loadingLobbies && lobbies.length === 0 && (
+                <p className="settings-hint">Активных лобби не найдено. Попроси друга создать лобби.</p>
+              )}
+
+              {!loadingLobbies && lobbies.length > 0 && (
+                <div className="lobby-list">
+                  {lobbies.map(entry => (
+                    <div key={entry.lobbyId} className="lobby-entry">
+                      <div className="lobby-entry-info">
+                        <span className="lobby-entry-owner">{entry.owner}</span>
+                        <span className="lobby-entry-count">{entry.members} / {entry.maxMembers}</span>
+                      </div>
+                      <button
+                        className="connect-btn"
+                        style={{ marginTop: 0, padding: '6px 18px', fontSize: 13 }}
+                        onClick={() => handleJoin(entry)}
+                      >
+                        Войти
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
