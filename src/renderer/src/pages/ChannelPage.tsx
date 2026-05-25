@@ -169,7 +169,7 @@ export default function ChannelPage() {
       localVadRef.current = { ctx: localCtx, interval: localInterval }
     } catch { /* VAD optional */ }
 
-    const signaling = new SteamSignalingClient(server.lobbyId)
+    const signaling = new SteamSignalingClient(server.lobbyId, server.isOwner)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
     peerManager.setOutputDevice(settings.outputDeviceId)
@@ -301,6 +301,10 @@ export default function ChannelPage() {
   function handleRemoveServer(id: string) {
     if (selectedServerId === id && (connState === 'connected' || connState === 'connecting')) {
       handleDisconnect()
+    }
+    const srv = servers.find(s => s.id === id)
+    if (srv?.isOwner) {
+      ipcRenderer.invoke('steam:destroyLobby').catch(() => {})
     }
     const updated = servers.filter(s => s.id !== id)
     setServers(updated)

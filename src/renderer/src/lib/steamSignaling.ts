@@ -23,7 +23,7 @@ export class SteamSignalingClient {
   private joinedListener: ((_e: unknown, peer: { steamId: string; name: string }) => void) | null = null
   private leftListener: ((_e: unknown, steamId: string) => void) | null = null
 
-  constructor(private lobbyId: string) {}
+  constructor(private lobbyId: string, private isOwner = false) {}
 
   on<K extends keyof SteamSignalingHandlers>(event: K, handler: SteamSignalingHandlers[K]) {
     this.handlers[event] = handler
@@ -100,7 +100,7 @@ export class SteamSignalingClient {
   }
 
   leave() {
-    ipcRenderer.invoke('steam:leaveLobby').catch(() => {})
+    ipcRenderer.invoke('steam:leaveLobby', this.isOwner).catch(() => {})
   }
 
   disconnect() {

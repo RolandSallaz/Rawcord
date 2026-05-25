@@ -53,9 +53,12 @@ export function initSteam(): boolean {
       const myId = client.localplayer.getSteamId().steamId64
       if (d.user_changed === myId) return
       const sid = d.user_changed.toString()
-      if (d.member_state_change & 1) {        // Entered
+      // Steam SDK bitmask: Entered=1, Left=2, Disconnected=4, Kicked=8, Banned=16
+      // steamworks.js TS types map Entered=0 (wrong) — handle both interpretations
+      const entered = d.member_state_change === 0 || (d.member_state_change & 1) !== 0
+      if (entered) {
         broadcast('steam:peer-joined', { steamId: sid, name: '' })
-      } else if (d.member_state_change & (2 | 4 | 8 | 16)) { // Left/Disconnected/Kicked/Banned
+      } else {
         broadcast('steam:peer-left', sid)
       }
     })
@@ -130,6 +133,21 @@ export function setupSteamIPC() {
 
   ipcMain.handle('steam:joinLobby', async (_e, lobbyIdStr: string) => {
     if (!client) throw new Error('Steam not available')
+
+    // If we already have this lobby active (we created it), skip re-join
+    if (activeLobby && activeLobby.id.toString() === lobbyIdStr) {
+      startMsgPoll()
+      const myId = client.localplayer.getSteamId().steamId64
+      try {
+        const members = (activeLobby.getMembers() as Array<{ steamId64: bigint }>)
+          .filter(m => m.steamId64 !== myId)
+          .map(m => ({ steamId: m.steamId64.toString(), name: '' }))
+        return members
+      } catch {
+        return []
+      }
+    }
+
     const lobby = await client.matchmaking.joinLobby(BigInt(lobbyIdStr))
     activeLobby = lobby
     startMsgPoll()
@@ -140,7 +158,20 @@ export function setupSteamIPC() {
     return members
   })
 
-  ipcMain.handle('steam:leaveLobby', () => {
+  // isOwner=true means keep the lobby alive (just unregister from voice, don't destroy lobby)
+  ipcMain.handle('steam:leaveLobby', (_e, isOwner = false) => {
+    if (!client || !activeLobby) return
+    stopMsgPoll()
+    if (!isOwner) {
+      try { activeLobby.leave() } catch {}
+      activeLobby = null
+      client.localplayer.setRichPresence('connect', '')
+      client.localplayer.setRichPresence('steam_display', '')
+    }
+  })
+
+  // Fully destroy the lobby (called when owner removes the server)
+  ipcMain.handle('steam:destroyLobby', () => {
     if (!client || !activeLobby) return
     try { activeLobby.leave() } catch {}
     activeLobby = null
