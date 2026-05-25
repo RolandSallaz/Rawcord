@@ -256,6 +256,8 @@ export default function ChannelPage() {
       console.error('[connect] Steam lobby error:', err)
       const msg = err instanceof Error && err.message === 'Steam not available'
         ? 'Steam недоступен. Запусти приложение через Steam.'
+        : err instanceof Error && err.message === 'LOBBY_EXPIRED'
+        ? 'Лобби больше не существует. Удали сервер и создай новый.'
         : 'Не удалось подключиться к лобби Steam'
       setErrorMsg(msg)
       setConnState('error')

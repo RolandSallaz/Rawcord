@@ -154,7 +154,15 @@ export function setupSteamIPC() {
       stopMsgPoll()
     }
 
-    const lobby = await client.matchmaking.joinLobby(BigInt(lobbyIdStr))
+    let lobby
+    try {
+      lobby = await client.matchmaking.joinLobby(BigInt(lobbyIdStr))
+    } catch (err) {
+      // Lobby likely expired — clean up stale state
+      activeLobby = null
+      stopMsgPoll()
+      throw new Error('LOBBY_EXPIRED')
+    }
     activeLobby = lobby
     startMsgPoll()
     const myId = client.localplayer.getSteamId().steamId64
