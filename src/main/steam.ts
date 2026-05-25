@@ -134,18 +134,24 @@ export function setupSteamIPC() {
   ipcMain.handle('steam:joinLobby', async (_e, lobbyIdStr: string) => {
     if (!client) throw new Error('Steam not available')
 
-    // If we already have this lobby active (we created it), skip re-join
-    if (activeLobby && activeLobby.id.toString() === lobbyIdStr) {
-      startMsgPoll()
-      const myId = client.localplayer.getSteamId().steamId64
-      try {
-        const members = (activeLobby.getMembers() as Array<{ steamId64: bigint }>)
-          .filter(m => m.steamId64 !== myId)
-          .map(m => ({ steamId: m.steamId64.toString(), name: '' }))
-        return members
-      } catch {
-        return []
+    // If we already have this lobby active, skip re-join
+    if (activeLobby) {
+      if (activeLobby.id.toString() === lobbyIdStr) {
+        startMsgPoll()
+        const myId = client.localplayer.getSteamId().steamId64
+        try {
+          const members = (activeLobby.getMembers() as Array<{ steamId64: bigint }>)
+            .filter(m => m.steamId64 !== myId)
+            .map(m => ({ steamId: m.steamId64.toString(), name: '' }))
+          return members
+        } catch {
+          return []
+        }
       }
+      // Different lobby — leave the old one first
+      try { activeLobby.leave() } catch {}
+      activeLobby = null
+      stopMsgPoll()
     }
 
     const lobby = await client.matchmaking.joinLobby(BigInt(lobbyIdStr))

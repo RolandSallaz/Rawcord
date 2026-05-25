@@ -243,9 +243,13 @@ export default function ChannelPage() {
 
     try {
       await signaling.connect()
-    } catch {
+    } catch (err) {
       stream.getTracks().forEach(t => t.stop())
-      setErrorMsg('Не удалось подключиться к лобби Steam')
+      console.error('[connect] Steam lobby error:', err)
+      const msg = err instanceof Error && err.message === 'Steam not available'
+        ? 'Steam недоступен. Запусти приложение через Steam.'
+        : 'Не удалось подключиться к лобби Steam'
+      setErrorMsg(msg)
       setConnState('error')
       return
     }
