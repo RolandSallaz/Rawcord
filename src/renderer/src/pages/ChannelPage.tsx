@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { SignalingClient, type PeerInfo } from '../lib/signaling'
+import { SteamSignalingClient } from '../lib/steamSignaling'
+import type { PeerInfo } from '../lib/signaling'
 import { PeerManager } from '../lib/webrtc'
 import { loadSettings, saveSettings, type AudioSettings } from '../lib/settings'
 import { loadProfile, saveProfile, type UserProfile } from '../lib/profile'
@@ -56,14 +57,34 @@ export default function ChannelPage() {
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
   const [isSpeaking, setIsSpeaking] = useState(false)
 
-  const signalingRef = useRef<SignalingClient | null>(null)
+  const signalingRef = useRef<SteamSignalingClient | null>(null)
   const peerManagerRef = useRef<PeerManager | null>(null)
-  const hostedServerIdRef = useRef<string | null>(null)
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
   const prevMicMutedRef = useRef(false)
   const localVadRef = useRef<{ ctx: AudioContext; interval: ReturnType<typeof setInterval> } | null>(null)
 
   useEffect(() => { return () => { cleanup() } }, [])
+
+  // Handle Steam Rich Presence join (friend clicks "Join Game")
+  useEffect(() => {
+    const handler = (_e: unknown, incomingLobbyId: string) => {
+      const existing = servers.find(s => s.lobbyId === incomingLobbyId)
+      if (existing) {
+        setSelectedServerId(existing.id)
+      } else {
+        const srv: SavedServer = {
+          id: crypto.randomUUID(),
+          name: `Lobby ${incomingLobbyId.slice(-6)}`,
+          lobbyId: incomingLobbyId,
+          isOwner: false,
+        }
+        handleAddServer(srv)
+      }
+    }
+    ipcRenderer.on('steam:join-requested', handler)
+    return () => ipcRenderer.removeListener('steam:join-requested', handler)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [servers])
 
   // Auto-exit StreamViewer when the watched peer stops sharing
   useEffect(() => {
@@ -148,7 +169,7 @@ export default function ChannelPage() {
       localVadRef.current = { ctx: localCtx, interval: localInterval }
     } catch { /* VAD optional */ }
 
-    const signaling = new SignalingClient(server.url)
+    const signaling = new SteamSignalingClient(server.lobbyId)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
     peerManager.setOutputDevice(settings.outputDeviceId)
@@ -189,7 +210,15 @@ export default function ChannelPage() {
     signaling.on('onPeerJoined', (peer) => {
       if (peer.avatar) peerAvatars.set(peer.id, peer.avatar)
       peerManager.createPeer(peer.id, peer.nickname, true)
-      setPeers(prev => [...prev, peer])
+      setPeers(prev => {
+        if (prev.some(p => p.id === peer.id)) return prev
+        return [...prev, peer]
+      })
+    })
+
+    signaling.on('onPeerUpdated', (peer) => {
+      if (peer.avatar) peerAvatars.set(peer.id, peer.avatar)
+      setPeers(prev => prev.map(p => p.id === peer.id ? { ...p, ...peer } : p))
     })
 
     signaling.on('onPeerLeft', (id) => {
@@ -212,17 +241,11 @@ export default function ChannelPage() {
       setPeers([])
     })
 
-    if (server.isHost) {
-      const portMatch = server.url.match(/:(\d+)\/?$/)
-      const port = portMatch ? parseInt(portMatch[1]) : 3001
-      try { await ipcRenderer.invoke('server:start', port) } catch { /* already running */ }
-    }
-
     try {
       await signaling.connect()
     } catch {
       stream.getTracks().forEach(t => t.stop())
-      setErrorMsg('Не удалось подключиться к серверу')
+      setErrorMsg('Не удалось подключиться к лобби Steam')
       setConnState('error')
       return
     }
@@ -284,11 +307,6 @@ export default function ChannelPage() {
     saveServers(updated)
     if (selectedServerId === id) {
       setSelectedServerId(updated[0]?.id ?? null)
-    }
-    const srv = servers.find(s => s.id === id)
-    if (srv?.isHost && hostedServerIdRef.current === id) {
-      ipcRenderer.invoke('server:stop')
-      hostedServerIdRef.current = null
     }
   }
 

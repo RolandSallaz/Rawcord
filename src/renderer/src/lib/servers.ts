@@ -1,15 +1,17 @@
 export interface SavedServer {
   id: string
   name: string
-  url: string
-  isHost: boolean
+  lobbyId: string
+  isOwner: boolean
 }
 
 const KEY = 'rawcord_servers'
 
 export function loadServers(): SavedServer[] {
   try {
-    return JSON.parse(localStorage.getItem(KEY) ?? '[]') as SavedServer[]
+    const raw = JSON.parse(localStorage.getItem(KEY) ?? '[]') as Record<string, unknown>[]
+    // Filter out legacy WebSocket servers that don't have lobbyId
+    return raw.filter(s => typeof s.lobbyId === 'string') as unknown as SavedServer[]
   } catch {
     return []
   }

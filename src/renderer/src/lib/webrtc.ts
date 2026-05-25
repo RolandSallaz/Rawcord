@@ -1,5 +1,8 @@
 import SimplePeer from 'simple-peer'
-import type { SignalingClient } from './signaling'
+
+interface ISignaling {
+  relay(to: string, payload: object): void
+}
 
 export interface PeerState {
   id: string
@@ -10,7 +13,7 @@ export interface PeerState {
 export class PeerManager {
   private peers = new Map<string, SimplePeer.Instance>()
   private stream: MediaStream | null = null
-  private signaling: SignalingClient
+  private signaling: ISignaling
   private audioContainer: HTMLDivElement
   private outputDeviceId = ''
 
@@ -28,7 +31,7 @@ export class PeerManager {
   onSharingChanged: (sharingPeerIds: Set<string>) => void = () => {}
   onSpeakingChanged: (speaking: Set<string>) => void = () => {}
 
-  constructor(signaling: SignalingClient) {
+  constructor(signaling: ISignaling) {
     this.signaling = signaling
     this.audioContainer = document.createElement('div')
     this.audioContainer.style.display = 'none'

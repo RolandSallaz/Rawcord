@@ -1,0 +1,124 @@
+import { ipcMain, BrowserWindow } from 'electron'
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+const sw = require('steamworks.js')
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let client: any = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let activeLobby: any = null   // Lobby object returned by createLobby / joinLobby
+let msgPollId: ReturnType<typeof setInterval> | null = null
+
+function broadcast(channel: string, ...args: unknown[]) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, ...args)
+  }
+}
+
+function startMsgPoll() {
+  if (msgPollId) return
+  msgPollId = setInterval(() => {
+    if (!client) return
+    try {
+      let size: number
+      while ((size = client.networking.isP2PPacketAvailable()) > 0) {
+        const pkt = client.networking.readP2PPacket(size)
+        broadcast('steam:msg', {
+          from: pkt.steamId.steamId64.toString(),
+          data: pkt.data.toString('utf8'),
+        })
+      }
+    } catch {}
+  }, 50)
+}
+
+function stopMsgPoll() {
+  if (msgPollId) { clearInterval(msgPollId); msgPollId = null }
+}
+
+export function initSteam(): boolean {
+  try {
+    client = sw.init(480)
+
+    // Auto-accept P2P session requests from any peer
+    client.callback.register(sw.SteamCallback.P2PSessionRequest, (d: { remote: bigint }) => {
+      client.networking.acceptP2PSession(d.remote)
+    })
+
+    // Real-time lobby member change events
+    client.callback.register(sw.SteamCallback.LobbyChatUpdate, (d: {
+      lobby: bigint; user_changed: bigint; member_state_change: number
+    }) => {
+      if (!activeLobby || d.lobby !== activeLobby.id) return
+      const myId = client.localplayer.getSteamId().steamId64
+      if (d.user_changed === myId) return
+      const sid = d.user_changed.toString()
+      if (d.member_state_change & 1) {        // Entered
+        broadcast('steam:peer-joined', { steamId: sid, name: '' })
+      } else if (d.member_state_change & (2 | 4 | 8 | 16)) { // Left/Disconnected/Kicked/Banned
+        broadcast('steam:peer-left', sid)
+      }
+    })
+
+    // Friends can join via Steam "Join Game" button
+    client.callback.register(sw.SteamCallback.GameLobbyJoinRequested, (d: { lobby_steam_id: bigint }) => {
+      broadcast('steam:join-requested', d.lobby_steam_id.toString())
+    })
+
+    console.log('[Steam] Ready:', client.localplayer.getName())
+    return true
+  } catch (e) {
+    console.warn('[Steam] Not available:', (e as Error).message)
+    return false
+  }
+}
+
+export function setupSteamIPC() {
+  ipcMain.handle('steam:available', () => !!client)
+
+  ipcMain.handle('steam:getUser', () => {
+    if (!client) return null
+    const id = client.localplayer.getSteamId()
+    return { steamId: id.steamId64.toString(), name: client.localplayer.getName() as string }
+  })
+
+  ipcMain.handle('steam:createLobby', async () => {
+    if (!client) throw new Error('Steam not available')
+    const lobby = await client.matchmaking.createLobby(2 /* Public */, 20)
+    activeLobby = lobby
+    startMsgPoll()
+    const lobbyId = (lobby.id as bigint).toString()
+    // Rich presence so Steam friends can join with one click
+    client.localplayer.setRichPresence('connect', `+lobby ${lobbyId}`)
+    client.localplayer.setRichPresence('steam_display', '#Status_InLobby')
+    return lobbyId
+  })
+
+  ipcMain.handle('steam:joinLobby', async (_e, lobbyIdStr: string) => {
+    if (!client) throw new Error('Steam not available')
+    const lobby = await client.matchmaking.joinLobby(BigInt(lobbyIdStr))
+    activeLobby = lobby
+    startMsgPoll()
+    const myId = client.localplayer.getSteamId().steamId64
+    const members = (lobby.getMembers() as Array<{ steamId64: bigint }>)
+      .filter(m => m.steamId64 !== myId)
+      .map(m => ({ steamId: m.steamId64.toString(), name: '' }))
+    return members
+  })
+
+  ipcMain.handle('steam:leaveLobby', () => {
+    if (!client || !activeLobby) return
+    try { activeLobby.leave() } catch {}
+    activeLobby = null
+    stopMsgPoll()
+    client.localplayer.setRichPresence('connect', '')
+    client.localplayer.setRichPresence('steam_display', '')
+  })
+
+  ipcMain.handle('steam:sendMsg', (_e, targetSteamId: string, data: string) => {
+    if (!client) return
+    try {
+      client.networking.sendP2PPacket(BigInt(targetSteamId), 2 /* Reliable */, Buffer.from(data, 'utf8'))
+    } catch {}
+  })
+}

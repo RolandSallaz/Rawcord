@@ -3,6 +3,7 @@ import { join } from 'path'
 import { networkInterfaces } from 'os'
 import { autoUpdater } from 'electron-updater'
 import { startServer, stopServer } from './signalingServer'
+import { initSteam, setupSteamIPC } from './steam'
 
 const isDev = process.env['NODE_ENV'] === 'development'
 const SIGNAL_PORT = 3001
@@ -136,6 +137,8 @@ ipcMain.handle('screen:hideBorder', async () => {
 })
 
 app.whenReady().then(() => {
+  initSteam()
+  setupSteamIPC()
   createWindow()
 
   // Electron 17+ recommended: use setDisplayMediaRequestHandler so getDisplayMedia()
