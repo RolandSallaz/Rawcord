@@ -53,11 +53,15 @@ export default function ChannelPage() {
   const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream>>(new Map())
   const [watchingPeerId, setWatchingPeerId] = useState<string | null>(null)
   const [profileCard, setProfileCard] = useState<{ peer: PeerInfo; anchor: DOMRect } | null>(null)
+  const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
+  const [isSpeaking, setIsSpeaking] = useState(false)
 
   const signalingRef = useRef<SignalingClient | null>(null)
   const peerManagerRef = useRef<PeerManager | null>(null)
   const hostedServerIdRef = useRef<string | null>(null)
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
+  const prevMicMutedRef = useRef(false)
+  const localVadRef = useRef<{ ctx: AudioContext; interval: ReturnType<typeof setInterval> } | null>(null)
 
   useEffect(() => { return () => { cleanup() } }, [])
 
@@ -90,6 +94,13 @@ export default function ChannelPage() {
   }, [settings.voiceMode, settings.pttKey, connState])
 
   function cleanup() {
+    if (localVadRef.current) {
+      clearInterval(localVadRef.current.interval)
+      localVadRef.current.ctx.close()
+      localVadRef.current = null
+    }
+    setIsSpeaking(false)
+    setSpeakingPeers(new Set())
     peerManagerRef.current?.destroy()
     peerManagerRef.current = null
     signalingRef.current?.disconnect()
@@ -117,6 +128,26 @@ export default function ChannelPage() {
       return
     }
 
+    // Local VAD for self speaking indicator
+    try {
+      const localCtx = new AudioContext()
+      const localSource = localCtx.createMediaStreamSource(stream)
+      const localAnalyser = localCtx.createAnalyser()
+      localAnalyser.fftSize = 512
+      const localMute = localCtx.createGain()
+      localMute.gain.value = 0
+      localSource.connect(localAnalyser)
+      localSource.connect(localMute)
+      localMute.connect(localCtx.destination)
+      const localBuf = new Float32Array(512)
+      const localInterval = setInterval(() => {
+        localAnalyser.getFloatTimeDomainData(localBuf)
+        let sum = 0; for (const v of localBuf) sum += v * v
+        setIsSpeaking(Math.sqrt(sum / localBuf.length) > 0.01)
+      }, 80)
+      localVadRef.current = { ctx: localCtx, interval: localInterval }
+    } catch { /* VAD optional */ }
+
     const signaling = new SignalingClient(server.url)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
@@ -137,6 +168,7 @@ export default function ChannelPage() {
     }
 
     peerManager.onSharingChanged = (set) => setRemoteSharingPeers(new Set(set))
+    peerManager.onSpeakingChanged = (set) => setSpeakingPeers(new Set(set))
 
     peerManager.onRemoteVideo = (peerId, track, streams) => {
       const videoStream = streams[0] ?? new MediaStream([track])
@@ -181,7 +213,9 @@ export default function ChannelPage() {
     })
 
     if (server.isHost) {
-      try { await ipcRenderer.invoke('server:start') } catch { /* already running */ }
+      const portMatch = server.url.match(/:(\d+)\/?$/)
+      const port = portMatch ? parseInt(portMatch[1]) : 3001
+      try { await ipcRenderer.invoke('server:start', port) } catch { /* already running */ }
     }
 
     try {
@@ -217,6 +251,7 @@ export default function ChannelPage() {
     setConnState('idle')
     setMicMuted(false)
     setDeafened(false)
+    prevMicMutedRef.current = false
   }
 
   function handleChannelClick(ch: Channel) {
@@ -267,17 +302,25 @@ export default function ChannelPage() {
   function toggleDeafen() {
     const next = !deafened
     setDeafened(next)
-    if (next) { setMicMuted(true); peerManagerRef.current?.setMicMuted(true) }
+    if (next) {
+      prevMicMutedRef.current = micMuted
+      setMicMuted(true)
+      peerManagerRef.current?.setMicMuted(true)
+    } else {
+      setMicMuted(prevMicMutedRef.current)
+      peerManagerRef.current?.setMicMuted(prevMicMutedRef.current)
+    }
     peerManagerRef.current?.setDeafened(next)
   }
 
-  async function handleStartScreenShare(stream: MediaStream) {
+  async function handleStartScreenShare(stream: MediaStream, sourceId: string) {
     setScreenShareOpen(false)
     try {
       await peerManagerRef.current?.startScreenShare(stream)
       setLocalScreenStream(stream)
       setIsSharing(true)
       setTimeout(() => { if (localVideoRef.current) localVideoRef.current.srcObject = stream }, 0)
+      ipcRenderer.invoke('screen:showBorder', sourceId).catch(() => {})
     } catch {
       stream.getTracks().forEach(t => t.stop())
     }
@@ -289,6 +332,7 @@ export default function ChannelPage() {
     setLocalScreenStream(null)
     setIsSharing(false)
     if (localVideoRef.current) localVideoRef.current.srcObject = null
+    ipcRenderer.invoke('screen:hideBorder').catch(() => {})
   }
 
   function handleSettingsChange(s: AudioSettings) {
@@ -383,12 +427,12 @@ export default function ChannelPage() {
 
                   {connState === 'connected' && activeChannel.id === ch.id && (
                     <div className="voice-members">
-                      <div className="voice-member self">
+                      <div className={`voice-member self${isSpeaking && !micMuted ? ' speaking' : ''}`}>
                         <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={24} />
                         <span className="vm-name">{profile.nickname}</span>
                         {micMuted
                           ? <svg className="vm-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
-                          : <span className="vm-speaking" />
+                          : <span className={`vm-speaking${isSpeaking ? ' active' : ''}`} />
                         }
                         {isSharing && (
                           <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor" >
@@ -399,7 +443,7 @@ export default function ChannelPage() {
                       {peers.map(peer => (
                         <div
                           key={peer.id}
-                          className="voice-member clickable"
+                          className={`voice-member clickable${speakingPeers.has(peer.id) ? ' speaking' : ''}`}
                           onClick={(e) => setProfileCard({ peer, anchor: e.currentTarget.getBoundingClientRect() })}
                         >
                           <AvatarImg src={peer.avatar} initial={peer.nickname[0] ?? '?'} size={24} />
@@ -411,7 +455,7 @@ export default function ChannelPage() {
                             ? <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor">
                                 <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
                               </svg>
-                            : <span className="vm-speaking" />
+                            : <span className={`vm-speaking${speakingPeers.has(peer.id) ? ' active' : ''}`} />
                           }
                         </div>
                       ))}

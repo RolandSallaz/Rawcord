@@ -18,10 +18,15 @@ export class PeerManager {
   private screenTrack: MediaStreamTrack | null = null
   private peerNicknames = new Map<string, string>()
   private sharingPeers = new Set<string>()
+  private audioCtx: AudioContext | null = null
+  private analysers = new Map<string, AnalyserNode>()
+  private speakingPeers = new Set<string>()
+  private vadInterval: ReturnType<typeof setInterval> | null = null
 
   onPeersChanged: (peers: PeerState[]) => void = () => {}
   onRemoteVideo: (peerId: string, track: MediaStreamTrack, streams: readonly MediaStream[]) => void = () => {}
   onSharingChanged: (sharingPeerIds: Set<string>) => void = () => {}
+  onSpeakingChanged: (speaking: Set<string>) => void = () => {}
 
   constructor(signaling: SignalingClient) {
     this.signaling = signaling
@@ -65,6 +70,19 @@ export class PeerManager {
           (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(this.outputDeviceId).catch(() => {})
         }
         this.audioContainer.appendChild(audio)
+
+        // VAD: route source through a silent gain to force graph processing, then analyse
+        if (!this.audioCtx) this.audioCtx = new AudioContext()
+        const source = this.audioCtx.createMediaStreamSource(remoteStream)
+        const analyser = this.audioCtx.createAnalyser()
+        analyser.fftSize = 512
+        const mute = this.audioCtx.createGain()
+        mute.gain.value = 0
+        source.connect(analyser)
+        source.connect(mute)
+        mute.connect(this.audioCtx.destination)
+        this.analysers.set(peerId, analyser)
+        if (!this.vadInterval) this.startVad()
       }
       // Handle video tracks arriving with the initial stream
       const videoTracks = remoteStream.getVideoTracks()
@@ -145,6 +163,25 @@ export class PeerManager {
     }
   }
 
+  private startVad() {
+    const buf = new Float32Array(512)
+    this.vadInterval = setInterval(() => {
+      let changed = false
+      for (const [id, analyser] of this.analysers) {
+        analyser.getFloatTimeDomainData(buf)
+        let sum = 0
+        for (const v of buf) sum += v * v
+        const speaking = Math.sqrt(sum / buf.length) > 0.01
+        const was = this.speakingPeers.has(id)
+        if (speaking !== was) {
+          speaking ? this.speakingPeers.add(id) : this.speakingPeers.delete(id)
+          changed = true
+        }
+      }
+      if (changed) this.onSpeakingChanged(new Set(this.speakingPeers))
+    }, 80)
+  }
+
   removePeer(peerId: string) {
     const peer = this.peers.get(peerId)
     if (peer) {
@@ -154,6 +191,13 @@ export class PeerManager {
 
     this.peerNicknames.delete(peerId)
     this.sharingPeers.delete(peerId)
+    this.analysers.delete(peerId)
+    this.speakingPeers.delete(peerId)
+
+    if (this.analysers.size === 0 && this.vadInterval) {
+      clearInterval(this.vadInterval)
+      this.vadInterval = null
+    }
 
     const audio = this.audioContainer.querySelector(`[data-peer-id="${peerId}"]`)
     audio?.remove()
@@ -167,6 +211,11 @@ export class PeerManager {
     this.peers.clear()
     this.peerNicknames.clear()
     this.sharingPeers.clear()
+    this.analysers.clear()
+    this.speakingPeers.clear()
+    if (this.vadInterval) { clearInterval(this.vadInterval); this.vadInterval = null }
+    this.audioCtx?.close()
+    this.audioCtx = null
     this.audioContainer.innerHTML = ''
     this.stream?.getTracks().forEach(t => t.stop())
     this.stream = null

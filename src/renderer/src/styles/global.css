@@ -645,9 +645,14 @@ html, body, #root {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--green);
+  background: var(--bg-4);
   flex-shrink: 0;
-  opacity: .7;
+  transition: background .1s, box-shadow .1s;
+}
+
+.vm-speaking.active {
+  background: var(--green);
+  box-shadow: 0 0 0 2px rgba(35, 165, 90, .25);
 }
 
 .vm-muted {
@@ -1275,6 +1280,8 @@ html, body, #root {
 }
 
 /* Clickable voice member */
+.voice-member.speaking .vm-name { color: #fff; }
+
 .voice-member.clickable {
   cursor: pointer;
   border-radius: 4px;

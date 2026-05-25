@@ -26,7 +26,7 @@ const QUALITIES: Quality[] = [
 const FPS_OPTIONS = [10, 30, 60]
 
 interface Props {
-  onStart: (stream: MediaStream) => void
+  onStart: (stream: MediaStream, sourceId: string) => void
   onClose: () => void
 }
 
@@ -69,21 +69,17 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
 
     const q = QUALITIES[qualityIdx]
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Store the selected source in the main process so setDisplayMediaRequestHandler can use it
+      await ipcRenderer.invoke('screen:capture', selectedId)
+      const stream = await navigator.mediaDevices.getDisplayMedia({
         audio: false,
         video: {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          mandatory: {
-            chromeMediaSource: 'desktop',
-            chromeMediaSourceId: selectedId,
-            maxWidth: q.width,
-            maxHeight: q.height,
-            maxFrameRate: fps,
-            minFrameRate: Math.min(fps, 10),
-          },
-        } as MediaTrackConstraints,
+          width: { ideal: q.width },
+          height: { ideal: q.height },
+          frameRate: { ideal: fps },
+        },
       })
-      onStart(stream)
+      onStart(stream, selectedId)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка захвата экрана')
       setStarting(false)
