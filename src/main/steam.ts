@@ -139,10 +139,15 @@ export function setupSteamIPC() {
       if (activeLobby.id.toString() === lobbyIdStr) {
         startMsgPoll()
         const myId = client.localplayer.getSteamId().steamId64
+        const myIdStr = myId.toString()
         try {
-          const members = (activeLobby.getMembers() as Array<{ steamId64: bigint }>)
-            .filter(m => m.steamId64 !== myId)
-            .map(m => ({ steamId: m.steamId64.toString(), name: '' }))
+          const raw = activeLobby.getMembers()
+          const members = (Array.isArray(raw) ? raw : [])
+            .filter(m => {
+              const id = m?.steamId64 ?? m
+              return id !== myId && id?.toString() !== myIdStr
+            })
+            .map(m => ({ steamId: (m?.steamId64 ?? m).toString(), name: '' }))
           return members
         } catch {
           return []
@@ -166,9 +171,14 @@ export function setupSteamIPC() {
     activeLobby = lobby
     startMsgPoll()
     const myId = client.localplayer.getSteamId().steamId64
-    const members = (lobby.getMembers() as Array<{ steamId64: bigint }>)
-      .filter(m => m.steamId64 !== myId)
-      .map(m => ({ steamId: m.steamId64.toString(), name: '' }))
+    const myIdStr = myId.toString()
+    const raw = lobby.getMembers()
+    const members = (Array.isArray(raw) ? raw : [])
+      .filter(m => {
+        const id = m?.steamId64 ?? m
+        return id !== myId && id?.toString() !== myIdStr
+      })
+      .map(m => ({ steamId: (m?.steamId64 ?? m).toString(), name: '' }))
     return members
   })
 

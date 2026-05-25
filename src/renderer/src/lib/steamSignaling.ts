@@ -24,6 +24,8 @@ export class SteamSignalingClient {
   private joinedListener: ((_e: unknown, peer: { steamId: string; name: string }) => void) | null = null
   private leftListener: ((_e: unknown, steamId: string) => void) | null = null
 
+  private mySteamId = ''
+
   constructor(private lobbyId: string, private isOwner = false) {}
 
   on<K extends keyof SteamSignalingHandlers>(event: K, handler: SteamSignalingHandlers[K]) {
@@ -31,12 +33,19 @@ export class SteamSignalingClient {
   }
 
   async connect(): Promise<void> {
+    // Fetch own Steam ID for self-filtering
+    try {
+      const user = await ipcRenderer.invoke('steam:getUser') as { steamId: string; name: string } | null
+      if (user) this.mySteamId = user.steamId
+    } catch {}
+
     this.msgListener = (_e, { from, data }) => {
       let msg: Record<string, unknown>
       try { msg = JSON.parse(data) } catch { return }
 
       try {
         if (msg.type === 'announce') {
+          if (from === this.mySteamId) return
           const peer: PeerInfo = {
             id: from,
             nickname: (msg.nickname as string) || from.slice(-6),
@@ -54,8 +63,9 @@ export class SteamSignalingClient {
             this.sendMsg(from, { type: 'announce', nickname: this.myNickname, avatar: this.myAvatar })
           }
         } else if (msg.type === 'relay') {
-          this.handlers.onRelay?.(from, msg.payload as RelayPayload)
+          if (from !== this.mySteamId) this.handlers.onRelay?.(from, msg.payload as RelayPayload)
         } else if (msg.type === 'chat') {
+          if (from === this.mySteamId) return
           console.log('[SteamSignaling] chat received from', from.slice(-6), ':', (msg.text as string)?.slice(0, 50))
           this.handlers.onChat?.(from, msg.text as string, msg.nickname as string || from.slice(-6), msg.avatar as string | undefined)
         } else {
@@ -67,7 +77,7 @@ export class SteamSignalingClient {
     }
 
     this.joinedListener = (_e, { steamId, name }) => {
-      if (this.seenPeers.has(steamId)) return
+      if (steamId === this.mySteamId || this.seenPeers.has(steamId)) return
       const peer: PeerInfo = { id: steamId, nickname: name || steamId.slice(-6), avatar: undefined }
       this.seenPeers.set(steamId, peer)
       try {
@@ -94,6 +104,7 @@ export class SteamSignalingClient {
       await ipcRenderer.invoke('steam:joinLobby', this.lobbyId)
 
     for (const m of existingMembers) {
+      if (m.steamId === this.mySteamId) continue
       const peer: PeerInfo = { id: m.steamId, nickname: m.steamId.slice(-6), avatar: undefined }
       this.seenPeers.set(m.steamId, peer)
     }
