@@ -49,9 +49,9 @@ export function initSteam(): boolean {
     client.callback.register(sw.SteamCallback.LobbyChatUpdate, (d: {
       lobby: bigint; user_changed: bigint; member_state_change: number
     }) => {
-      if (!activeLobby || d.lobby !== activeLobby.id) return
-      const myId = client.localplayer.getSteamId().steamId64
-      if (d.user_changed === myId) return
+      if (!activeLobby || d.lobby.toString() !== activeLobby.id.toString()) return
+      const myId = client.localplayer.getSteamId().steamId64.toString()
+      if (d.user_changed.toString() === myId) return
       const sid = d.user_changed.toString()
       // Steam SDK bitmask: Entered=1, Left=2, Disconnected=4, Kicked=8, Banned=16
       // steamworks.js TS types map Entered=0 (wrong) — handle both interpretations

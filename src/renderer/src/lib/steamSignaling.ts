@@ -25,6 +25,10 @@ export class SteamSignalingClient {
   private leftListener: ((_e: unknown, steamId: string) => void) | null = null
 
   private mySteamId = ''
+  // True after connect() processes existingMembers and fires onPeers.
+  // Pre-connect announces update seenPeers but must NOT fire onPeerJoined —
+  // onPeers will create those peers with initiator:false, preventing offer glare.
+  private _ready = false
 
   constructor(private lobbyId: string, private isOwner = false) {}
 
@@ -56,7 +60,11 @@ export class SteamSignalingClient {
             this.handlers.onPeerUpdated?.(peer)
           } else {
             this.seenPeers.set(from, peer)
-            this.handlers.onPeerJoined?.(peer)
+            if (this._ready) {
+              // Post-connect: this is a newly joined peer, fire onPeerJoined
+              this.handlers.onPeerJoined?.(peer)
+            }
+            // Pre-connect: onPeers will create this peer with initiator:false
           }
           // Reply with our own info so they know who we are
           if (this.myNickname) {
@@ -105,9 +113,14 @@ export class SteamSignalingClient {
 
     for (const m of existingMembers) {
       if (m.steamId === this.mySteamId) continue
-      const peer: PeerInfo = { id: m.steamId, nickname: m.steamId.slice(-6), avatar: undefined }
-      this.seenPeers.set(m.steamId, peer)
+      // If announce already arrived during joinLobby await (with real nickname/avatar), keep it
+      if (!this.seenPeers.has(m.steamId)) {
+        const peer: PeerInfo = { id: m.steamId, nickname: m.steamId.slice(-6), avatar: undefined }
+        this.seenPeers.set(m.steamId, peer)
+      }
     }
+
+    this._ready = true
 
     try {
       this.handlers.onPeers?.([...this.seenPeers.values()])
