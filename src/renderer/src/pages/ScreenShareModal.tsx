@@ -72,11 +72,7 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
       // Store the selected source in the main process so setDisplayMediaRequestHandler can use it
       await ipcRenderer.invoke('screen:capture', selectedId)
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
+        audio: false,
         video: {
           width: { ideal: q.width },
           height: { ideal: q.height },

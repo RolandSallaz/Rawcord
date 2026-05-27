@@ -193,6 +193,22 @@ export default function SettingsModal({ settings, profile, onChange, onProfileCh
           </div>
 
           <div className="settings-row">
+            <span className="settings-label">Громкость микрофона</span>
+            <div className="mic-vol-row">
+              <input
+                type="range"
+                className="mic-vol-slider"
+                min={0}
+                max={200}
+                step={5}
+                value={settings.micVolume}
+                onChange={e => setAudio('micVolume', Number(e.target.value))}
+              />
+              <span className="mic-vol-value">{settings.micVolume}%</span>
+            </div>
+          </div>
+
+          <div className="settings-row">
             <span className="settings-label">Подавление шума</span>
             <label className="toggle-wrap">
               <input type="checkbox" checked={settings.noiseSuppression} onChange={e => setAudio('noiseSuppression', e.target.checked)} />
@@ -200,7 +216,7 @@ export default function SettingsModal({ settings, profile, onChange, onProfileCh
             </label>
           </div>
 
-          <p className="settings-hint">Смена устройств применяется при следующем подключении</p>
+          <p className="settings-hint">Смена устройств и шумодава применяется при следующем подключении</p>
         </div>
 
         {/* Voice mode section */}

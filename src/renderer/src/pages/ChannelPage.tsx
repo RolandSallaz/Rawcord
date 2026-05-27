@@ -16,7 +16,8 @@ type AppState = 'idle' | 'browsing' | 'connecting' | 'connected' | 'error'
 type ConnectionMode = 'steam' | 'server'
 
 interface ISignalingClient {
-  on(event: string, handler: (...args: unknown[]) => void): void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on(event: string, handler: (...args: any[]) => void): void
   connect(): Promise<void>
   join(channel: string, nickname: string, avatar?: string): void
   relay(to: string, payload: object): void
@@ -86,12 +87,11 @@ export default function ChannelPage() {
   const chatEndRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLInputElement>(null)
 
-  const signalingRef = useRef<SteamSignalingClient | null>(null)
+  const signalingRef = useRef<ISignalingClient | null>(null)
   const peerManagerRef = useRef<PeerManager | null>(null)
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
   const prevMicMutedRef = useRef(false)
   const localVadRef = useRef<{ ctx: AudioContext; interval: ReturnType<typeof setInterval> } | null>(null)
-  const prevSharingRef = useRef<Set<string>>(new Set())
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
 
@@ -102,6 +102,11 @@ export default function ChannelPage() {
       setWatchingPeerId(null)
     }
   }, [remoteVideoStreams, watchingPeerId])
+
+  // Live-update mic gain when slider moves (no reconnect needed)
+  useEffect(() => {
+    peerManagerRef.current?.setMicGain(settings.micVolume)
+  }, [settings.micVolume])
 
   useEffect(() => {
     if (settings.voiceMode !== 'ptt' || appState !== 'connected') return
@@ -218,6 +223,7 @@ export default function ChannelPage() {
     const signaling = factory(lobbyId)
     const peerManager = new PeerManager(signaling)
     peerManager.setStream(stream)
+    peerManager.setMicGain(settings.micVolume)
     peerManager.setOutputDevice(settings.outputDeviceId)
 
     const peerInfo = new Map<string, PeerInfo>()

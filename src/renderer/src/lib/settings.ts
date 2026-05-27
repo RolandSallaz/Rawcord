@@ -2,6 +2,7 @@ export interface AudioSettings {
   inputDeviceId: string
   outputDeviceId: string
   noiseSuppression: boolean
+  micVolume: number
   voiceMode: 'always' | 'ptt'
   pttKey: string
 }
@@ -10,6 +11,7 @@ export const defaultSettings: AudioSettings = {
   inputDeviceId: '',
   outputDeviceId: '',
   noiseSuppression: true,
+  micVolume: 100,
   voiceMode: 'always',
   pttKey: 'Space',
 }

@@ -10,9 +10,38 @@ export interface PeerState {
   isSharing?: boolean
 }
 
+function mungeOpus(sdp: string): string {
+  const lines = sdp.split('\r\n')
+  let opusPt = ''
+  for (const line of lines) {
+    const m = line.match(/a=rtpmap:(\d+) opus/i)
+    if (m) { opusPt = m[1]; break }
+  }
+  if (!opusPt) return sdp
+  return sdp.replace(
+    new RegExp(`(a=fmtp:${opusPt} )([^\r\n]*)`, 'g'),
+    (_, prefix, params) => {
+      const parts = (params as string).split(';').filter(Boolean)
+      const addIfMissing = (k: string, v: string) => {
+        if (!parts.some(p => p.trim().startsWith(k))) parts.push(`${k}=${v}`)
+      }
+      addIfMissing('usedtx', '1')
+      addIfMissing('useinbandfec', '1')
+      addIfMissing('stereo', '0')
+      addIfMissing('maxaveragebitrate', '40000')
+      return prefix + parts.join(';')
+    }
+  )
+}
+
 export class PeerManager {
   private peers = new Map<string, SimplePeer.Instance>()
   private stream: MediaStream | null = null
+  private originalStream: MediaStream | null = null
+  private micAudioCtx: AudioContext | null = null
+  private micGainNode: GainNode | null = null
+  private micVolume = 100
+  private micMutedState = false
   private signaling: ISignaling
   private audioContainer: HTMLDivElement
   private outputDeviceId = ''
@@ -41,7 +70,28 @@ export class PeerManager {
   }
 
   setStream(stream: MediaStream) {
-    this.stream = stream
+    this.originalStream = stream
+    try {
+      const ctx = new AudioContext()
+      this.micAudioCtx = ctx
+      const src = ctx.createMediaStreamSource(stream)
+      const gain = ctx.createGain()
+      gain.gain.value = this.micVolume / 100
+      this.micGainNode = gain
+      const dest = ctx.createMediaStreamDestination()
+      src.connect(gain)
+      gain.connect(dest)
+      this.stream = new MediaStream(dest.stream.getAudioTracks())
+    } catch {
+      this.stream = stream
+    }
+  }
+
+  setMicGain(volume: number) {
+    this.micVolume = Math.max(0, Math.min(200, volume))
+    if (this.micGainNode && !this.micMutedState) {
+      this.micGainNode.gain.value = this.micVolume / 100
+    }
   }
 
   createPeer(peerId: string, nickname: string, initiator: boolean) {
@@ -53,6 +103,7 @@ export class PeerManager {
       initiator,
       stream: this.stream ?? undefined,
       trickle: true,
+      sdpTransform: mungeOpus,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -66,8 +117,11 @@ export class PeerManager {
     })
 
     peer.on('stream', (remoteStream: MediaStream) => {
-      const isScreenStream = remoteStream.getVideoTracks().length > 0
-      if (!isScreenStream && !this.audioContainer.querySelector(`audio[data-peer-id="${peerId}"]`)) {
+      // Create audio element if not yet done for this peer.
+      // Deliberately NOT filtering by video tracks — WebRTC may deliver a merged
+      // stream containing both voice audio and screen video; we must always honour
+      // the audio regardless of what else is in the stream.
+      if (!this.audioContainer.querySelector(`audio[data-peer-id="${peerId}"]`)) {
         const audio = document.createElement('audio')
         audio.srcObject = remoteStream
         audio.autoplay = true
@@ -77,7 +131,7 @@ export class PeerManager {
         }
         this.audioContainer.appendChild(audio)
 
-        // VAD: route source through a silent gain to force graph processing, then analyse
+        // VAD: route source through a silent gain to force graph processing
         if (!this.audioCtx) this.audioCtx = new AudioContext()
         const source = this.audioCtx.createMediaStreamSource(remoteStream)
         const analyser = this.audioCtx.createAnalyser()
@@ -90,7 +144,8 @@ export class PeerManager {
         this.analysers.set(peerId, analyser)
         if (!this.vadInterval) this.startVad()
       }
-      // Handle video tracks arriving with the initial stream
+
+      // Handle video tracks arriving with this stream (screen share arriving as initial stream)
       const videoTracks = remoteStream.getVideoTracks()
       if (videoTracks.length > 0) {
         this.sharingPeers.add(peerId)
@@ -150,8 +205,35 @@ export class PeerManager {
       }
     }
 
-    // Handle user stopping via OS "Stop sharing" button
     videoTrack.onended = () => this.stopScreenShare()
+
+    // Set video bitrate based on actual track resolution after renegotiation settles
+    setTimeout(() => this.applyScreenBitrate(), 1500)
+  }
+
+  private async applyScreenBitrate(): Promise<void> {
+    if (!this.screenTrack) return
+    const s = this.screenTrack.getSettings()
+    const pixels = (s.width ?? 1280) * (s.height ?? 720)
+    let kbps: number
+    if (pixels >= 1920 * 1080) kbps = 4000
+    else if (pixels >= 1280 * 720) kbps = 2000
+    else if (pixels >= 854 * 480) kbps = 1000
+    else kbps = 500
+
+    for (const [, peer] of this.peers) {
+      if (peer.destroyed) continue
+      try {
+        const pc = (peer as unknown as { _pc: RTCPeerConnection })._pc
+        if (!pc) continue
+        const sender = pc.getSenders().find(s => s.track === this.screenTrack)
+        if (!sender) continue
+        const params = sender.getParameters()
+        if (!params.encodings || params.encodings.length === 0) params.encodings = [{}]
+        params.encodings[0].maxBitrate = kbps * 1000
+        await sender.setParameters(params)
+      } catch { /* best-effort */ }
+    }
   }
 
   stopScreenShare(): void {
@@ -239,9 +321,16 @@ export class PeerManager {
     if (this.vadInterval) { clearInterval(this.vadInterval); this.vadInterval = null }
     this.audioCtx?.close()
     this.audioCtx = null
+    this.micAudioCtx?.close()
+    this.micAudioCtx = null
+    this.micGainNode = null
     this.audioContainer.innerHTML = ''
+    // Stop the processed stream's virtual tracks (WebAudio destination)
     this.stream?.getTracks().forEach(t => t.stop())
     this.stream = null
+    // Stop the original hardware mic stream
+    this.originalStream?.getTracks().forEach(t => t.stop())
+    this.originalStream = null
     this.notifyChanged()
   }
 
@@ -266,7 +355,12 @@ export class PeerManager {
   }
 
   setMicMuted(muted: boolean) {
-    this.stream?.getAudioTracks().forEach(t => { t.enabled = !muted })
+    this.micMutedState = muted
+    if (this.micGainNode) {
+      this.micGainNode.gain.value = muted ? 0 : this.micVolume / 100
+    } else {
+      this.stream?.getAudioTracks().forEach(t => { t.enabled = !muted })
+    }
   }
 
   setDeafened(deafened: boolean) {
