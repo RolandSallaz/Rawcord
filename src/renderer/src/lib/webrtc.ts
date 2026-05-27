@@ -367,6 +367,17 @@ export class PeerManager {
     this.audioContainer.querySelectorAll('audio').forEach(el => { el.muted = deafened })
   }
 
+  /** Устанавливает персональную громкость для конкретного пира (0–200, где 100 = 100%) */
+  setPeerVolume(peerId: string, volume: number) {
+    const el = this.audioContainer.querySelector<HTMLAudioElement>(`audio[data-peer-id="${peerId}"]`)
+    if (el) el.volume = Math.max(0, Math.min(2, volume / 100))
+  }
+
+  getPeerVolume(peerId: string): number {
+    const el = this.audioContainer.querySelector<HTMLAudioElement>(`audio[data-peer-id="${peerId}"]`)
+    return el ? Math.round(el.volume * 100) : 100
+  }
+
   destroy() {
     this.destroyAll()
     this.audioContainer.remove()
