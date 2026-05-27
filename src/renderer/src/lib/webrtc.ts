@@ -61,6 +61,7 @@ export class PeerManager {
   onRemoteVideoEnded: (peerId: string) => void = () => {}
   onSharingChanged: (sharingPeerIds: Set<string>) => void = () => {}
   onSpeakingChanged: (speaking: Set<string>) => void = () => {}
+  onPeerDisconnected: (peerId: string) => void = () => {}
 
   constructor(signaling: ISignaling) {
     this.signaling = signaling
@@ -82,6 +83,10 @@ export class PeerManager {
       src.connect(gain)
       gain.connect(dest)
       this.stream = new MediaStream(dest.stream.getAudioTracks())
+      // Auto-resume if the browser suspends the context (kills mic audio silently)
+      ctx.addEventListener('statechange', () => {
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+      })
     } catch {
       this.stream = stream
     }
@@ -117,11 +122,11 @@ export class PeerManager {
     })
 
     peer.on('stream', (remoteStream: MediaStream) => {
-      // Create audio element if not yet done for this peer.
-      // Deliberately NOT filtering by video tracks — WebRTC may deliver a merged
-      // stream containing both voice audio and screen video; we must always honour
-      // the audio regardless of what else is in the stream.
-      if (!this.audioContainer.querySelector(`audio[data-peer-id="${peerId}"]`)) {
+      const existingAudio = this.audioContainer.querySelector<HTMLAudioElement>(`audio[data-peer-id="${peerId}"]`)
+      if (existingAudio) {
+        // Renegotiation delivered a new stream — update the existing element
+        existingAudio.srcObject = remoteStream
+      } else {
         const audio = document.createElement('audio')
         audio.srcObject = remoteStream
         audio.autoplay = true
@@ -132,7 +137,12 @@ export class PeerManager {
         this.audioContainer.appendChild(audio)
 
         // VAD: route source through a silent gain to force graph processing
-        if (!this.audioCtx) this.audioCtx = new AudioContext()
+        if (!this.audioCtx) {
+          this.audioCtx = new AudioContext()
+          this.audioCtx.addEventListener('statechange', () => {
+            if (this.audioCtx?.state === 'suspended') this.audioCtx.resume().catch(() => {})
+          })
+        }
         const source = this.audioCtx.createMediaStreamSource(remoteStream)
         const analyser = this.audioCtx.createAnalyser()
         analyser.fftSize = 512
@@ -173,8 +183,8 @@ export class PeerManager {
       }
     })
 
-    peer.on('close', () => this.removePeer(peerId))
-    peer.on('error', () => this.removePeer(peerId))
+    peer.on('close', () => { this.removePeer(peerId); this.onPeerDisconnected(peerId) })
+    peer.on('error', () => { this.removePeer(peerId); this.onPeerDisconnected(peerId) })
 
     this.peers.set(peerId, peer)
 

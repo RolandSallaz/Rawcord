@@ -312,6 +312,7 @@ export default function ChannelPage() {
     peerManager.setOutputDevice(settings.outputDeviceId)
 
     const peerInfo = new Map<string, PeerInfo>()
+    const peerRole = new Map<string, boolean>() // true = this side was initiator
 
     peerManager.onPeersChanged = () => {
       setPeers(prev =>
@@ -350,12 +351,14 @@ export default function ChannelPage() {
     signaling.on('onPeers', (existingPeers: PeerInfo[]) => {
       for (const p of existingPeers) {
         peerInfo.set(p.id, p)
+        peerRole.set(p.id, false)
         peerManager.createPeer(p.id, p.nickname, false)
       }
       setPeers(existingPeers.map(p => ({ ...p })))
     })
     signaling.on('onPeerJoined', (peer: PeerInfo) => {
       peerInfo.set(peer.id, peer)
+      peerRole.set(peer.id, true)
       peerManager.createPeer(peer.id, peer.nickname, true)
       setPeers(prev => prev.some(p => p.id === peer.id) ? prev : [...prev, peer])
       playJoinSound()
@@ -367,6 +370,7 @@ export default function ChannelPage() {
     })
     signaling.on('onPeerLeft', (id: string) => {
       peerInfo.delete(id)
+      peerRole.delete(id)
       peerManager.removePeer(id)
       setPeers(prev => prev.filter(p => p.id !== id))
       playLeaveSound()
@@ -388,6 +392,19 @@ export default function ChannelPage() {
         timestamp: Date.now(),
       }])
     })
+    peerManager.onPeerDisconnected = (peerId) => {
+      const info = peerInfo.get(peerId)
+      if (!info) return
+      const wasInitiator = peerRole.get(peerId) ?? false
+      // Initiator reconnects sooner; non-initiator waits in case initiator arrives first
+      const delay = wasInitiator ? 1500 : 3000
+      setTimeout(() => {
+        if (peerManagerRef.current !== peerManager) return // already cleaned up
+        if (peerManager.getPeerIds().includes(peerId)) return // already reconnected
+        peerManager.createPeer(peerId, info.nickname, wasInitiator)
+      }, delay)
+    }
+
     signaling.on('onClose', () => {
       cleanup()
       setPeers([])
