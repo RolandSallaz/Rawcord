@@ -1,8 +1,13 @@
 import { useEffect, useRef } from 'react'
-import type { PeerInfo } from '../lib/signaling'
+
+interface ProfileCardPeer {
+  id: string
+  nickname: string
+  avatar?: string
+}
 
 interface Props {
-  peer: PeerInfo
+  peer: ProfileCardPeer
   stream?: MediaStream
   anchor: DOMRect
   onWatch: () => void

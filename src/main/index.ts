@@ -3,7 +3,6 @@ import { join } from 'path'
 import { networkInterfaces } from 'os'
 import { autoUpdater } from 'electron-updater'
 import { startServer, stopServer } from './signalingServer'
-import { initSteam, setupSteamIPC } from './steam'
 
 const isDev = process.env['NODE_ENV'] === 'development'
 const SIGNAL_PORT = 3001
@@ -176,7 +175,7 @@ ipcMain.handle('server:start', async (_event, port?: number) => {
 })
 
 ipcMain.handle('server:stop', async () => {
-  stopServer()
+  await stopServer()
 })
 
 // Screen capture sources (for picker UI)
@@ -240,9 +239,6 @@ ipcMain.handle('screen:hideBorder', async () => {
 })
 
 app.whenReady().then(async () => {
-  initSteam()
-  setupSteamIPC()
-
   await showUpdateWindow()
   createWindow()
 
@@ -269,7 +265,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  stopServer()
+  stopServer().catch(() => {})
   borderOverlay?.close()
   borderOverlay = null
   if (process.platform !== 'darwin') app.quit()

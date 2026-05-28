@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { SteamSignalingClient } from '../lib/steamSignaling'
-import { SignalingClient, type PeerInfo } from '../lib/signaling'
-import { PeerManager } from '../lib/webrtc'
+import { SignalingClient } from '../lib/signaling'
+import { SFUClient, type PeerState } from '../lib/sfuClient'
 import { loadSettings, saveSettings, type AudioSettings } from '../lib/settings'
 import { loadProfile, saveProfile, type UserProfile } from '../lib/profile'
 import { playJoinSound, playLeaveSound } from '../lib/sounds'
@@ -14,21 +13,9 @@ import StreamViewer from './StreamViewer'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { ipcRenderer } = (window as any).require('electron')
 
-type AppState = 'idle' | 'browsing' | 'connecting' | 'connected' | 'error' | 'reconnecting'
+type AppState = 'idle' | 'connecting' | 'connected' | 'error' | 'reconnecting'
 
 const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]
-type ConnectionMode = 'steam' | 'server'
-
-interface ISignalingClient {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  on(event: string, handler: (...args: any[]) => void): void
-  connect(): Promise<void>
-  join(channel: string, nickname: string, avatar?: string): void
-  relay(to: string, payload: object): void
-  sendChat(text: string): void
-  updateProfile(nickname: string, avatar?: string): void
-  disconnect(): void
-}
 
 interface ChatMessage {
   id: string
@@ -37,13 +24,6 @@ interface ChatMessage {
   nickname: string
   avatar?: string
   timestamp: number
-}
-
-interface LobbyEntry {
-  lobbyId: string
-  owner: string
-  members: number
-  maxMembers: number
 }
 
 function AvatarImg({ src, initial, size = 32 }: { src?: string; initial: string; size?: number }) {
@@ -55,7 +35,6 @@ function AvatarImg({ src, initial, size = 32 }: { src?: string; initial: string;
   )
 }
 
-// Mic icon — shown when active (not muted)
 function IconMic() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor">
@@ -64,7 +43,6 @@ function IconMic() {
   )
 }
 
-// Mic muted icon
 function IconMicOff() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor">
@@ -73,7 +51,6 @@ function IconMicOff() {
   )
 }
 
-// Headphones (deafen) icon
 function IconHeadphones() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor">
@@ -82,7 +59,6 @@ function IconHeadphones() {
   )
 }
 
-// Headphones off (deafened) icon
 function IconHeadphonesOff() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor">
@@ -91,7 +67,6 @@ function IconHeadphonesOff() {
   )
 }
 
-// Screen share icon
 function IconScreen() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor">
@@ -108,18 +83,13 @@ export default function ChannelPage() {
 
   const [appState, setAppState] = useState<AppState>('idle')
   const [errorMsg, setErrorMsg] = useState('')
-  const [mode, setMode] = useState<ConnectionMode>('steam')
   const [isOwner, setIsOwner] = useState(false)
-  const [currentLobbyId, setCurrentLobbyId] = useState<string | null>(null)
-
-  const [lobbies, setLobbies] = useState<LobbyEntry[]>([])
-  const [loadingLobbies, setLoadingLobbies] = useState(false)
 
   const [serverUrl, setServerUrl] = useState('')
   const [serverInput, setServerInput] = useState('')
   const [serverPort, setServerPort] = useState('3001')
 
-  const [peers, setPeers] = useState<PeerInfo[]>([])
+  const [peers, setPeers] = useState<PeerState[]>([])
   const [micMuted, setMicMuted] = useState(false)
   const [deafened, setDeafened] = useState(false)
   const [isSharing, setIsSharing] = useState(false)
@@ -127,7 +97,7 @@ export default function ChannelPage() {
   const [remoteSharingPeers, setRemoteSharingPeers] = useState<Set<string>>(new Set())
   const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream>>(new Map())
   const [watchingPeerId, setWatchingPeerId] = useState<string | null>(null)
-  const [profileCard, setProfileCard] = useState<{ peer: PeerInfo; anchor: DOMRect } | null>(null)
+  const [profileCard, setProfileCard] = useState<{ peer: PeerState; anchor: DOMRect } | null>(null)
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [streamNotification, setStreamNotification] = useState<string | null>(null)
@@ -139,11 +109,11 @@ export default function ChannelPage() {
   const [reconnectCountdown, setReconnectCountdown] = useState(0)
   const [recentServers, setRecentServers] = useState<RecentServer[]>(() => loadRecentServers())
   const [copiedUrl, setCopiedUrl] = useState(false)
-  const [peerVolPopup, setPeerVolPopup] = useState<{ peer: PeerInfo; anchor: DOMRect } | null>(null)
+  const [peerVolPopup, setPeerVolPopup] = useState<{ peer: PeerState; anchor: DOMRect } | null>(null)
   const [peerVolumes, setPeerVolumes] = useState<Map<string, number>>(new Map())
 
-  const signalingRef = useRef<ISignalingClient | null>(null)
-  const peerManagerRef = useRef<PeerManager | null>(null)
+  const signalingRef = useRef<SignalingClient | null>(null)
+  const sfuRef = useRef<SFUClient | null>(null)
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
   const prevMicMutedRef = useRef(false)
   const localVadRef = useRef<{ ctx: AudioContext; interval: ReturnType<typeof setInterval> } | null>(null)
@@ -152,12 +122,7 @@ export default function ChannelPage() {
   const intentionalDisconnectRef = useRef(false)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
-  const lastConnectionRef = useRef<{
-    mode: ConnectionMode
-    lobbyId: string | null
-    url: string | null
-    isOwner: boolean
-  } | null>(null)
+  const lastConnectionRef = useRef<{ url: string; isOwner: boolean } | null>(null)
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
   useEffect(() => { return () => { cleanup() } }, [])
@@ -169,35 +134,28 @@ export default function ChannelPage() {
   }, [remoteVideoStreams, watchingPeerId])
 
   useEffect(() => {
-    peerManagerRef.current?.setMicGain(settings.micVolume)
+    sfuRef.current?.setMicGain(settings.micVolume)
   }, [settings.micVolume])
 
   useEffect(() => {
     if (settings.voiceMode !== 'ptt' || appState !== 'connected') return
-    peerManagerRef.current?.setMicMuted(true)
+    sfuRef.current?.setMicMuted(true)
 
     if (settings.pttKey.startsWith('Mouse')) {
       const btn = parseInt(settings.pttKey.replace('Mouse', ''))
-      const onDown = (e: MouseEvent) => { if (e.button === btn) peerManagerRef.current?.setMicMuted(false) }
-      const onUp   = (e: MouseEvent) => { if (e.button === btn) peerManagerRef.current?.setMicMuted(true) }
+      const onDown = (e: MouseEvent) => { if (e.button === btn) sfuRef.current?.setMicMuted(false) }
+      const onUp   = (e: MouseEvent) => { if (e.button === btn) sfuRef.current?.setMicMuted(true) }
       window.addEventListener('mousedown', onDown)
       window.addEventListener('mouseup', onUp)
       return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('mouseup', onUp) }
     } else {
-      const onDown = (e: KeyboardEvent) => { if (e.code === settings.pttKey && !e.repeat) peerManagerRef.current?.setMicMuted(false) }
-      const onUp   = (e: KeyboardEvent) => { if (e.code === settings.pttKey) peerManagerRef.current?.setMicMuted(true) }
+      const onDown = (e: KeyboardEvent) => { if (e.code === settings.pttKey && !e.repeat) sfuRef.current?.setMicMuted(false) }
+      const onUp   = (e: KeyboardEvent) => { if (e.code === settings.pttKey) sfuRef.current?.setMicMuted(true) }
       window.addEventListener('keydown', onDown)
       window.addEventListener('keyup', onUp)
       return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
     }
   }, [settings.voiceMode, settings.pttKey, appState])
-
-  useEffect(() => {
-    const handler = (_e: unknown, lobbyId: string) => { handleJoinLobby(lobbyId) }
-    ipcRenderer.on('steam:join-requested', handler)
-    return () => ipcRenderer.removeListener('steam:join-requested', handler)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   function cleanup() {
     if (localVadRef.current) {
@@ -207,8 +165,8 @@ export default function ChannelPage() {
     }
     setIsSpeaking(false)
     setSpeakingPeers(new Set())
-    peerManagerRef.current?.destroy()
-    peerManagerRef.current = null
+    sfuRef.current?.destroy()
+    sfuRef.current = null
     signalingRef.current?.disconnect()
     signalingRef.current = null
   }
@@ -247,18 +205,8 @@ export default function ChannelPage() {
       if (!info) { setAppState('idle'); return }
       setAppState('connecting')
       try {
-        if (info.mode === 'server' && info.url) {
-          const url = info.url
-          await connectToChannel(null, info.isOwner,
-            info.isOwner
-              ? () => new SignalingClient(`ws://127.0.0.1:${url.split(':').pop()}`)
-              : () => new SignalingClient(url)
-          )
-        } else if (info.mode === 'steam' && info.lobbyId) {
-          await connectToChannel(info.lobbyId, info.isOwner,
-            (id) => new SteamSignalingClient(id!, info.isOwner)
-          )
-        }
+        const url = info.isOwner ? `ws://127.0.0.1:${info.url.split(':').pop()}` : info.url
+        await connectToChannel(url, info.isOwner)
       } catch {
         scheduleReconnect()
       }
@@ -274,48 +222,8 @@ export default function ChannelPage() {
     } catch { /* ignore */ }
   }
 
-  async function fetchLobbies() {
-    setLoadingLobbies(true)
-    try {
-      const list: LobbyEntry[] = await ipcRenderer.invoke('steam:getLobbies')
-      setLobbies(list)
-    } catch {
-      setLobbies([])
-    } finally {
-      setLoadingLobbies(false)
-    }
-  }
-
-  async function handleCreateLobby() {
-    setAppState('connecting')
-    setErrorMsg('')
-    try {
-      const lobbyId: string = await ipcRenderer.invoke('steam:createLobby')
-      setCurrentLobbyId(lobbyId)
-      setIsOwner(true)
-      lastConnectionRef.current = { mode: 'steam', lobbyId, url: null, isOwner: true }
-      await connectToChannel(lobbyId, true, (_id) => new SteamSignalingClient(lobbyId, true))
-    } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : 'Не удалось создать лобби')
-      setAppState('error')
-    }
-  }
-
-  const handleJoinLobby = useCallback(async (lobbyId: string) => {
-    setAppState('connecting')
-    setErrorMsg('')
-    setCurrentLobbyId(lobbyId)
-    setIsOwner(false)
-    lastConnectionRef.current = { mode: 'steam', lobbyId, url: null, isOwner: false }
-    await connectToChannel(lobbyId, false, (_id) => new SteamSignalingClient(lobbyId, false))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings, profile])
-
-  const connectToChannel = useCallback(async (
-    lobbyId: string | null,
-    owner: boolean,
-    factory: (lobbyId: string | null) => ISignalingClient
-  ) => {
+  const connectToChannel = useCallback(async (wsUrl: string, owner: boolean) => {
+    // 1) Получить микрофон
     let stream: MediaStream
     try {
       const audioConstraints: MediaTrackConstraints = {
@@ -327,11 +235,10 @@ export default function ChannelPage() {
     } catch {
       setErrorMsg('Нет доступа к микрофону')
       setAppState('error')
-      if (mode === 'steam' && !owner) ipcRenderer.invoke('steam:leaveLobby', false).catch(() => {})
       return
     }
 
-    // Local VAD
+    // 2) Локальный VAD по микрофону
     try {
       const ctx = new AudioContext()
       if (ctx.state === 'suspended') ctx.resume().catch(() => {})
@@ -352,105 +259,76 @@ export default function ChannelPage() {
       localVadRef.current = { ctx, interval }
     } catch { /* optional */ }
 
-    const signaling = factory(lobbyId)
-    const peerManager = new PeerManager(signaling)
-    peerManager.setStream(stream)
-    peerManager.setMicGain(settings.micVolume)
-    peerManager.setOutputDevice(settings.outputDeviceId)
+    // 3) Подключение к WS-сигналингу и создание SFU-клиента
+    const signaling = new SignalingClient(wsUrl)
+    const sfu = new SFUClient({
+      send: (msg) => signaling.send(msg),
+    })
+    sfu.setStream(stream)
+    sfu.setMicGain(settings.micVolume)
+    sfu.setOutputDevice(settings.outputDeviceId)
 
-    const peerInfo = new Map<string, PeerInfo>()
-    const peerRole = new Map<string, boolean>()
-
-    peerManager.onPeersChanged = () => {
-      setPeers(prev =>
-        peerManager.getPeerIds().map(id => {
-          const info = peerInfo.get(id)
-          return {
-            id,
-            nickname: info?.nickname ?? (prev.find(p => p.id === id)?.nickname ?? id.slice(0, 8)),
-            avatar: info?.avatar,
-          }
-        })
-      )
-    }
-    peerManager.onSharingChanged = (set) => {
+    // 4) Callbacks от SFUClient → React state
+    sfu.onPeersChanged = (list) => setPeers(list)
+    sfu.onSharingChanged = (set) => {
       setRemoteSharingPeers(prev => {
         for (const id of set) {
           if (!prev.has(id)) {
-            const name = peerInfo.get(id)?.nickname ?? id.slice(0, 8)
-            setStreamNotification(`${name} начал(а) трансляцию`)
+            // Имя берём из текущего списка peers через sfu (он держит актуальное состояние)
+            const list = sfu.getPeerStates ? sfu.getPeerStates() : []
+            const nick = list.find(p => p.id === id)?.nickname ?? id.slice(0, 8)
+            setStreamNotification(`${nick} начал(а) трансляцию`)
             setTimeout(() => setStreamNotification(null), 4000)
           }
         }
         return new Set(set)
       })
     }
-    peerManager.onSpeakingChanged = (set) => setSpeakingPeers(new Set(set))
-    peerManager.onRemoteVideo = (peerId, _track, streams) => {
+    sfu.onSpeakingChanged = (set) => setSpeakingPeers(new Set(set))
+    sfu.onRemoteVideo = (peerId, _track, streams) => {
       const videoStream = streams[0] ?? new MediaStream()
       setRemoteVideoStreams(prev => new Map(prev).set(peerId, videoStream))
     }
-    peerManager.onRemoteVideoEnded = (peerId) => {
+    sfu.onRemoteVideoEnded = (peerId) => {
       setRemoteVideoStreams(prev => { const m = new Map(prev); m.delete(peerId); return m })
       setRemoteSharingPeers(prev => { const m = new Set(prev); m.delete(peerId); return m })
     }
 
-    // Peer-level reconnect: when a WebRTC connection drops but signaling is still up,
-    // recreate the peer after a short delay (one side acts as initiator sooner).
-    peerManager.onPeerDisconnected = (peerId) => {
-      const info = peerInfo.get(peerId)
-      if (!info) return
-      const wasInitiator = peerRole.get(peerId) ?? false
-      const delay = wasInitiator ? 1500 : 3000
-      setTimeout(() => {
-        if (peerManagerRef.current !== peerManager) return
-        if (peerManager.getPeerIds().includes(peerId)) return
-        peerManager.createPeer(peerId, info.nickname, wasInitiator)
-      }, delay)
-    }
-
-    signaling.on('onPeers', (existingPeers: PeerInfo[]) => {
-      for (const p of existingPeers) {
-        peerInfo.set(p.id, p)
-        peerRole.set(p.id, false)
-        peerManager.createPeer(p.id, p.nickname, false)
-      }
-      setPeers(existingPeers.map(p => ({ ...p })))
+    // 5) Сигналинг handlers
+    signaling.on('onWelcome', async ({ iceServers, participants }) => {
+      sfu.setInitialParticipants(participants)
+      await sfu.start(iceServers)
     })
-    signaling.on('onPeerJoined', (peer: PeerInfo) => {
-      peerInfo.set(peer.id, peer)
-      peerRole.set(peer.id, true)
-      peerManager.createPeer(peer.id, peer.nickname, true)
-      setPeers(prev => prev.some(p => p.id === peer.id) ? prev : [...prev, peer])
+    signaling.on('onSdpOffer', async (sdp) => {
+      await sfu.handleSdp('offer', sdp)
+    })
+    signaling.on('onSdpAnswer', async (sdp) => {
+      await sfu.handleSdp('answer', sdp)
+    })
+    signaling.on('onIceCandidate', async (candidate) => {
+      await sfu.handleIceCandidate(candidate)
+    })
+    signaling.on('onParticipantJoined', (p) => {
+      sfu.participantJoined(p)
       playJoinSound()
     })
-    signaling.on('onPeerUpdated', (peer: PeerInfo) => {
-      peerInfo.set(peer.id, peer)
-      peerManager.updatePeerNickname(peer.id, peer.nickname)
-      setPeers(prev => prev.map(p => p.id === peer.id ? { ...p, ...peer } : p))
-    })
-    signaling.on('onPeerLeft', (id: string) => {
-      peerInfo.delete(id)
-      peerRole.delete(id)
-      peerManager.removePeer(id)
-      setPeers(prev => prev.filter(p => p.id !== id))
+    signaling.on('onParticipantLeft', (id) => {
+      sfu.participantLeft(id)
       playLeaveSound()
     })
-    signaling.on('onRelay', (from: string, payload: object) => {
-      if (!peerManager.getPeerIds().includes(from)) {
-        const info = peerInfo.get(from)
-        peerManager.createPeer(from, info?.nickname ?? from.slice(0, 8), false)
-      }
-      peerManager.signal(from, payload as object)
+    signaling.on('onParticipantUpdated', (p) => {
+      sfu.participantUpdated(p)
     })
-    signaling.on('onChat', (from: string, text: string, nickname: string, avatar?: string) => {
+    signaling.on('onParticipantSharing', (id, isSharingFlag) => {
+      sfu.participantSharing(id, isSharingFlag)
+    })
+    signaling.on('onChat', (from, text, nickname, avatar) => {
       setChatMessages(prev => [...prev, {
         id: `${from}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         from, text, nickname, avatar,
         timestamp: Date.now(),
       }])
     })
-
     signaling.on('onClose', () => {
       cleanup()
       setPeers([])
@@ -458,37 +336,38 @@ export default function ChannelPage() {
       if (intentionalDisconnectRef.current) {
         intentionalDisconnectRef.current = false
         setAppState('idle')
-        setCurrentLobbyId(null)
         setServerUrl('')
       } else {
         scheduleReconnect()
       }
     })
 
+    // 6) Подключение
     try {
       await signaling.connect()
     } catch {
       stream.getTracks().forEach(t => t.stop())
       cleanup()
-      setErrorMsg(mode === 'steam' ? 'Не удалось подключиться к лобби Steam' : 'Не удалось подключиться к серверу')
+      setErrorMsg('Не удалось подключиться к серверу')
       setAppState('error')
       return
     }
 
     signalingRef.current = signaling
-    peerManagerRef.current = peerManager
+    sfuRef.current = sfu
     intentionalDisconnectRef.current = false
     reconnectAttemptRef.current = 0
     signaling.join('voice', profile.nickname, profile.avatar || undefined)
+    setIsOwner(owner)
     setAppState('connected')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings, profile, mode])
+  }, [settings, profile])
 
   function handleDisconnect() {
     intentionalDisconnectRef.current = true
     cancelReconnect()
     if (isSharing) {
-      peerManagerRef.current?.stopScreenShare()
+      sfuRef.current?.stopScreenShare().catch(() => {})
       localScreenStream?.getTracks().forEach(t => t.stop())
       setLocalScreenStream(null)
       setIsSharing(false)
@@ -503,19 +382,18 @@ export default function ChannelPage() {
     setMicMuted(false)
     setDeafened(false)
     prevMicMutedRef.current = false
-    setCurrentLobbyId(null)
-    setIsOwner(false)
     setServerUrl('')
+    if (isOwner) ipcRenderer.invoke('server:stop').catch(() => {})
+    setIsOwner(false)
     lastConnectionRef.current = null
-    if (mode === 'server' && isOwner) ipcRenderer.invoke('server:stop').catch(() => {})
     setAppState('idle')
   }
 
   function toggleMic() {
     const next = !micMuted
     setMicMuted(next)
-    if (deafened && !next) { setDeafened(false); peerManagerRef.current?.setDeafened(false) }
-    peerManagerRef.current?.setMicMuted(next)
+    if (deafened && !next) { setDeafened(false); sfuRef.current?.setDeafened(false) }
+    sfuRef.current?.setMicMuted(next)
   }
 
   function toggleDeafen() {
@@ -523,12 +401,12 @@ export default function ChannelPage() {
     setDeafened(next)
     if (next) {
       prevMicMutedRef.current = micMuted
-      setMicMuted(true); peerManagerRef.current?.setMicMuted(true)
+      setMicMuted(true); sfuRef.current?.setMicMuted(true)
     } else {
       setMicMuted(prevMicMutedRef.current)
-      peerManagerRef.current?.setMicMuted(prevMicMutedRef.current)
+      sfuRef.current?.setMicMuted(prevMicMutedRef.current)
     }
-    peerManagerRef.current?.setDeafened(next)
+    sfuRef.current?.setDeafened(next)
   }
 
   async function handleStartServer() {
@@ -546,9 +424,8 @@ export default function ChannelPage() {
       const url = `ws://127.0.0.1:${result.port}`
       const publicUrl = `ws://${result.ip}:${result.port}`
       setServerUrl(publicUrl)
-      setIsOwner(true)
-      lastConnectionRef.current = { mode: 'server', lobbyId: null, url: publicUrl, isOwner: true }
-      await connectToChannel(null, true, () => new SignalingClient(url))
+      lastConnectionRef.current = { url: publicUrl, isOwner: true }
+      await connectToChannel(url, true)
     } catch (e) {
       const msg = e instanceof Error ? e.message : ''
       if (msg.includes('EADDRINUSE') || msg.includes('already in use') || msg.includes('listen')) {
@@ -569,17 +446,16 @@ export default function ChannelPage() {
     setAppState('connecting')
     setErrorMsg('')
     setServerUrl(input)
-    setIsOwner(false)
-    lastConnectionRef.current = { mode: 'server', lobbyId: null, url: input, isOwner: false }
+    lastConnectionRef.current = { url: input, isOwner: false }
     addRecentServer(input)
     setRecentServers(loadRecentServers())
-    connectToChannel(null, false, () => new SignalingClient(input))
+    connectToChannel(input, false)
   }
 
   async function handleStartScreenShare(stream: MediaStream, sourceId: string) {
     setScreenShareOpen(false)
     try {
-      await peerManagerRef.current?.startScreenShare(stream)
+      await sfuRef.current?.startScreenShare(stream)
       setLocalScreenStream(stream)
       setIsSharing(true)
       setTimeout(() => { if (localVideoRef.current) localVideoRef.current.srcObject = stream }, 0)
@@ -602,7 +478,7 @@ export default function ChannelPage() {
   }
 
   function handleStopScreenShare() {
-    peerManagerRef.current?.stopScreenShare()
+    sfuRef.current?.stopScreenShare().catch(() => {})
     localScreenStream?.getTracks().forEach(t => t.stop())
     setLocalScreenStream(null)
     setIsSharing(false)
@@ -620,7 +496,7 @@ export default function ChannelPage() {
         <SettingsModal
           settings={settings}
           profile={profile}
-          onChange={s => { setSettings(s); saveSettings(s); peerManagerRef.current?.setOutputDevice(s.outputDeviceId) }}
+          onChange={s => { setSettings(s); saveSettings(s); sfuRef.current?.setOutputDevice(s.outputDeviceId) }}
           onProfileChange={p => { saveProfile(p); setProfile(p); signalingRef.current?.updateProfile(p.nickname, p.avatar || undefined) }}
           onClose={() => setSettingsOpen(false)}
         />
@@ -630,7 +506,7 @@ export default function ChannelPage() {
       )}
       {profileCard && (
         <ProfileCard
-          peer={profileCard.peer}
+          peer={{ id: profileCard.peer.id, nickname: profileCard.peer.nickname, avatar: profileCard.peer.avatar }}
           stream={remoteVideoStreams.get(profileCard.peer.id)}
           anchor={profileCard.anchor}
           onWatch={() => { setWatchingPeerId(profileCard.peer.id); setProfileCard(null) }}
@@ -665,7 +541,7 @@ export default function ChannelPage() {
                 onChange={e => {
                   const v = parseInt(e.target.value)
                   setPeerVolumes(prev => new Map(prev).set(peerVolPopup.peer.id, v))
-                  peerManagerRef.current?.setPeerVolume(peerVolPopup.peer.id, v)
+                  sfuRef.current?.setPeerVolume(peerVolPopup.peer.id, v)
                 }}
               />
               <span className="peer-vol-value">{vol}%</span>
@@ -693,91 +569,67 @@ export default function ChannelPage() {
           <div className="cp-home-inner">
             <div className="cp-home-logo">R</div>
             <h1 className="cp-home-title">Rawcord</h1>
-            <p className="cp-home-sub">P2P голосовой чат</p>
+            <p className="cp-home-sub">Self-hosted голосовой чат</p>
 
-            <div className="cp-mode-toggle">
-              <button className={`cp-mode-btn${mode === 'steam' ? ' active' : ''}`} onClick={() => setMode('steam')}>
-                Через Steam
-              </button>
-              <button className={`cp-mode-btn${mode === 'server' ? ' active' : ''}`} onClick={() => setMode('server')}>
-                Выделенный сервер
-              </button>
+            <div className="cp-home-actions">
+              <div className="cp-action-card create-server-card">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/></svg>
+                <span className="cp-action-label">Создать сервер</span>
+                <span className="cp-action-desc">Запустить и ждать подключений</span>
+                <div className="connect-input-row">
+                  <span className="port-label">Порт:</span>
+                  <input
+                    className="server-url-input port-input"
+                    type="number" min="1024" max="65535" placeholder="3001"
+                    value={serverPort}
+                    onChange={e => setServerPort(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleStartServer() }}
+                  />
+                  <button className="connect-submit-btn" onClick={handleStartServer}>Создать</button>
+                </div>
+              </div>
+              <div className="cp-action-card connect-card">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                <span className="cp-action-label">Подключиться</span>
+                <span className="cp-action-desc">Ввести IP:Порт сервера</span>
+                <div className="connect-input-row">
+                  <input
+                    className="server-url-input"
+                    type="text" placeholder="192.168.1.100:3001"
+                    value={serverInput}
+                    onChange={e => setServerInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleConnectToServer() }}
+                  />
+                  <button
+                    className="connect-submit-btn"
+                    disabled={!serverInput.trim()}
+                    onClick={() => handleConnectToServer()}
+                  >Подкл.</button>
+                </div>
+                {recentServers.length > 0 && (
+                  <div className="cp-recent-servers">
+                    <div className="cp-recent-label">Недавние</div>
+                    {recentServers.map(s => (
+                      <div key={s.url} className="cp-recent-entry">
+                        <button
+                          className="cp-recent-connect"
+                          onClick={() => handleConnectToServer(s.url)}
+                          title={s.url}
+                        >
+                          <span className="cp-recent-url">{s.url.replace('ws://', '')}</span>
+                          <span className="cp-recent-time">{formatRelativeTime(s.lastConnected)}</span>
+                        </button>
+                        <button
+                          className="cp-recent-remove"
+                          title="Удалить из истории"
+                          onClick={() => { removeRecentServer(s.url); setRecentServers(loadRecentServers()) }}
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-
-            {mode === 'steam' ? (
-              <div className="cp-home-actions">
-                <button className="cp-action-card" onClick={handleCreateLobby}>
-                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-                  <span className="cp-action-label">Создать лобби</span>
-                  <span className="cp-action-desc">Друзья подключатся к тебе</span>
-                </button>
-                <button className="cp-action-card" onClick={() => { setAppState('browsing'); fetchLobbies() }}>
-                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                  <span className="cp-action-label">Найти лобби</span>
-                  <span className="cp-action-desc">Войти к другу</span>
-                </button>
-              </div>
-            ) : (
-              <div className="cp-home-actions">
-                <div className="cp-action-card create-server-card">
-                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/></svg>
-                  <span className="cp-action-label">Создать сервер</span>
-                  <span className="cp-action-desc">Запустить и ждать подключений</span>
-                  <div className="connect-input-row">
-                    <span className="port-label">Порт:</span>
-                    <input
-                      className="server-url-input port-input"
-                      type="number" min="1024" max="65535" placeholder="3001"
-                      value={serverPort}
-                      onChange={e => setServerPort(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleStartServer() }}
-                    />
-                    <button className="connect-submit-btn" onClick={handleStartServer}>Создать</button>
-                  </div>
-                </div>
-                <div className="cp-action-card connect-card">
-                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
-                  <span className="cp-action-label">Подключиться</span>
-                  <span className="cp-action-desc">Ввести IP:Порт сервера</span>
-                  <div className="connect-input-row">
-                    <input
-                      className="server-url-input"
-                      type="text" placeholder="192.168.1.100:3001"
-                      value={serverInput}
-                      onChange={e => setServerInput(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleConnectToServer() }}
-                    />
-                    <button
-                      className="connect-submit-btn"
-                      disabled={!serverInput.trim()}
-                      onClick={() => handleConnectToServer()}
-                    >Подкл.</button>
-                  </div>
-                  {recentServers.length > 0 && (
-                    <div className="cp-recent-servers">
-                      <div className="cp-recent-label">Недавние</div>
-                      {recentServers.map(s => (
-                        <div key={s.url} className="cp-recent-entry">
-                          <button
-                            className="cp-recent-connect"
-                            onClick={() => handleConnectToServer(s.url)}
-                            title={s.url}
-                          >
-                            <span className="cp-recent-url">{s.url.replace('ws://', '')}</span>
-                            <span className="cp-recent-time">{formatRelativeTime(s.lastConnected)}</span>
-                          </button>
-                          <button
-                            className="cp-recent-remove"
-                            title="Удалить из истории"
-                            onClick={() => { removeRecentServer(s.url); setRecentServers(loadRecentServers()) }}
-                          >×</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
           <button className="cp-settings-btn" onClick={() => setSettingsOpen(true)}>
             <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
@@ -785,40 +637,6 @@ export default function ChannelPage() {
           <div className="cp-user-badge">
             <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={28} />
             <span className="cp-user-name">{profile.nickname}</span>
-          </div>
-        </div>
-      )}
-
-      {/* ── BROWSING ── */}
-      {appState === 'browsing' && (
-        <div className="cp-browse">
-          <div className="cp-browse-header">
-            <button className="lobby-back-btn" onClick={() => setAppState('idle')}>← Назад</button>
-            <span className="cp-browse-title">Активные лобби</span>
-            <button className="lobby-refresh-btn" onClick={fetchLobbies} disabled={loadingLobbies}>
-              <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 16, height: 16 }}>
-                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
-              </svg>
-            </button>
-          </div>
-          <div className="cp-browse-body">
-            {loadingLobbies && <p className="settings-hint">Поиск лобби…</p>}
-            {!loadingLobbies && lobbies.length === 0 && (
-              <p className="settings-hint">Активных лобби не найдено. Попроси друга создать лобби.</p>
-            )}
-            {!loadingLobbies && lobbies.map(entry => (
-              <div key={entry.lobbyId} className="lobby-entry">
-                <div className="lobby-entry-info">
-                  <span className="lobby-entry-owner">{entry.owner}</span>
-                  <span className="lobby-entry-count">{entry.members} / {entry.maxMembers}</span>
-                </div>
-                <button
-                  className="connect-btn"
-                  style={{ marginTop: 0, padding: '6px 20px', fontSize: 13 }}
-                  onClick={() => handleJoinLobby(entry.lobbyId)}
-                >Войти</button>
-              </div>
-            ))}
           </div>
         </div>
       )}
@@ -852,7 +670,6 @@ export default function ChannelPage() {
             cancelReconnect()
             intentionalDisconnectRef.current = true
             setAppState('idle')
-            setCurrentLobbyId(null)
             setServerUrl('')
             lastConnectionRef.current = null
           }}>Отмена</button>
@@ -880,9 +697,7 @@ export default function ChannelPage() {
             <div className="ss-notification">{streamNotification}</div>
           )}
 
-          {/* Three-column body */}
           <div className="cp-connected-body">
-
             {/* Left: participants */}
             <div className="cp-participants">
               <div className="cp-participants-label">В голосовом · {peers.length + 1}</div>
@@ -999,9 +814,8 @@ export default function ChannelPage() {
             </div>
           </div>
 
-          {/* ── Discord-style bottom bar ── */}
+          {/* ── Bottom bar ── */}
           <div className="cp-bottom-bar">
-
             {/* Left: user info */}
             <div className="cp-bar-user">
               <div className={`cp-bar-avatar-wrap${isSpeaking && !micMuted ? ' speaking' : ''}`}>
@@ -1047,17 +861,6 @@ export default function ChannelPage() {
                     <span className="cp-bar-btn-label">Стоп</span>
                   </button>
               }
-
-              {mode === 'steam' && isOwner && (
-                <button
-                  className="cp-bar-btn"
-                  title="Пригласить друзей"
-                  onClick={() => ipcRenderer.invoke('steam:inviteFriends')}
-                >
-                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-                  <span className="cp-bar-btn-label">Позвать</span>
-                </button>
-              )}
             </div>
 
             {/* Right: server info + settings + disconnect */}

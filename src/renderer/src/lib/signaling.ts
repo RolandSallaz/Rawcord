@@ -1,26 +1,30 @@
-export interface PeerInfo {
-  id: string
-  nickname: string
-  avatar?: string
-}
+/**
+ * Тонкий WS-клиент для сигналинга к SFU-серверу. Знает только про сериализацию
+ * сообщений и dispatch событий — никакой WebRTC-логики, она в `sfuClient.ts`.
+ */
 
-type RelayPayload = object
+import type { PeerState } from './sfuClient'
 
-interface SignalingHandlers {
-  onPeers: (peers: PeerInfo[]) => void
-  onPeerJoined: (peer: PeerInfo) => void
-  onPeerLeft: (id: string) => void
-  onRelay: (from: string, payload: RelayPayload) => void
-  onClose: () => void
-  onPeerUpdated: (peer: PeerInfo) => void
+export interface SignalingHandlers {
+  onWelcome: (data: {
+    id: string
+    iceServers: RTCIceServer[]
+    participants: PeerState[]
+  }) => void
+  onSdpOffer: (sdp: string) => void
+  onSdpAnswer: (sdp: string) => void
+  onIceCandidate: (candidate: RTCIceCandidateInit) => void
+  onParticipantJoined: (participant: PeerState) => void
+  onParticipantLeft: (id: string) => void
+  onParticipantUpdated: (participant: PeerState) => void
+  onParticipantSharing: (id: string, isSharing: boolean) => void
   onChat: (from: string, text: string, nickname: string, avatar?: string) => void
+  onClose: () => void
 }
 
 export class SignalingClient {
   private ws: WebSocket | null = null
   private handlers: Partial<SignalingHandlers> = {}
-  private myNickname = ''
-  private myAvatar?: string
 
   constructor(private url: string) {}
 
@@ -45,23 +49,41 @@ export class SignalingClient {
         try { msg = JSON.parse(e.data as string) } catch { return }
 
         switch (msg.type) {
-          case 'peers':
-            this.handlers.onPeers?.(msg.peers as PeerInfo[])
+          case 'welcome':
+            this.handlers.onWelcome?.({
+              id: msg.id as string,
+              iceServers: msg.iceServers as RTCIceServer[],
+              participants: msg.participants as PeerState[],
+            })
             break
-          case 'peer-joined':
-            this.handlers.onPeerJoined?.({ id: msg.id as string, nickname: msg.nickname as string, avatar: msg.avatar as string | undefined })
+          case 'offer':
+            this.handlers.onSdpOffer?.(msg.sdp as string)
             break
-          case 'peer-left':
-            this.handlers.onPeerLeft?.(msg.id as string)
+          case 'answer':
+            this.handlers.onSdpAnswer?.(msg.sdp as string)
             break
-          case 'relay':
-            this.handlers.onRelay?.(msg.from as string, msg.payload as RelayPayload)
+          case 'ice-candidate':
+            this.handlers.onIceCandidate?.(msg.candidate as RTCIceCandidateInit)
             break
-          case 'peer-updated':
-            this.handlers.onPeerUpdated?.({ id: msg.id as string, nickname: msg.nickname as string, avatar: msg.avatar as string | undefined })
+          case 'participant-joined':
+            this.handlers.onParticipantJoined?.(msg.participant as PeerState)
+            break
+          case 'participant-left':
+            this.handlers.onParticipantLeft?.(msg.id as string)
+            break
+          case 'participant-updated':
+            this.handlers.onParticipantUpdated?.(msg.participant as PeerState)
+            break
+          case 'participant-sharing':
+            this.handlers.onParticipantSharing?.(msg.id as string, msg.isSharing as boolean)
             break
           case 'chat':
-            this.handlers.onChat?.(msg.from as string, msg.text as string, msg.nickname as string, msg.avatar as string | undefined)
+            this.handlers.onChat?.(
+              msg.from as string,
+              msg.text as string,
+              msg.nickname as string,
+              msg.avatar as string | undefined,
+            )
             break
         }
       }
@@ -70,39 +92,31 @@ export class SignalingClient {
     })
   }
 
-  join(channel: string, nickname: string, avatar?: string) {
-    this.myNickname = nickname
-    this.myAvatar = avatar
-    this.send({ type: 'join', channel, nickname, avatar })
-  }
-
-  relay(to: string, payload: RelayPayload) {
-    this.send({ type: 'relay', to, payload })
-  }
-
-  sendChat(text: string) {
-    this.send({ type: 'chat', text, nickname: this.myNickname, avatar: this.myAvatar })
-  }
-
-  updateProfile(nickname: string, avatar?: string) {
-    this.myNickname = nickname
-    this.myAvatar = avatar
-    this.send({ type: 'announce', nickname, avatar })
-  }
-
-  leave() {
-    this.send({ type: 'leave' })
-  }
-
-  disconnect() {
-    this.leave()
-    this.ws?.close()
-    this.ws = null
-  }
-
-  private send(msg: object) {
+  send(msg: object): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg))
     }
+  }
+
+  join(channel: string, nickname: string, avatar?: string): void {
+    this.send({ type: 'join', channel, nickname, avatar })
+  }
+
+  sendChat(text: string): void {
+    this.send({ type: 'chat', text })
+  }
+
+  updateProfile(nickname: string, avatar?: string): void {
+    this.send({ type: 'announce', nickname, avatar })
+  }
+
+  leave(): void {
+    this.send({ type: 'leave' })
+  }
+
+  disconnect(): void {
+    this.leave()
+    this.ws?.close()
+    this.ws = null
   }
 }
