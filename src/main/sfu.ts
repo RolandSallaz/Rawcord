@@ -46,13 +46,17 @@ interface ParticipantState {
   outgoing: Map<string, RTCRtpTransceiver>
 }
 
+/** Диапазон UDP-портов для ICE. Нужно пробросить на роутере (внешний = внутренний) */
+const ICE_PORT_RANGE: [number, number] = [40000, 50000]
+
+/** Дополнительные IP-адреса хоста для ICE-кандидатов (публичный IP, если порты не проброшены 1:1) */
+const ADDITIONAL_HOST_ADDRESSES: string[] = process.env.SFU_HOST_IPS
+  ? process.env.SFU_HOST_IPS.split(',')
+  : []
+
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  // Open Relay free TURN fallback (для NAT)
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
 ]
 
 /** ICE-серверы, которые отдаём клиентам в welcome (та же конфигурация, что у самого SFU) */
@@ -95,7 +99,13 @@ export class Room {
 
   /** Создать PC для нового участника и зарегистрировать в комнате */
   add(id: string, ws: WebSocket, info: ParticipantInfo): void {
-    const pc = new RTCPeerConnection({ iceServers: DEFAULT_ICE_SERVERS })
+    const pc = new RTCPeerConnection({
+      iceServers: DEFAULT_ICE_SERVERS,
+      icePortRange: ICE_PORT_RANGE,
+      iceUseIpv4: true,
+      iceUseIpv6: false,
+      iceAdditionalHostAddresses: ADDITIONAL_HOST_ADDRESSES,
+    })
 
     const p: ParticipantState = {
       id, ws, pc,
