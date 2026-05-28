@@ -136,9 +136,10 @@ export class Room {
     try {
       await p.pc.setRemoteDescription({ type: 'offer', sdp })
 
+      const hadExistingForwards = p.outgoing.size > 0
       // Если это initial offer — добавляем форварды от существующих участников.
       // Они появятся в нашем следующем server-initiated offer, не в этом answer.
-      if (p.outgoing.size === 0) {
+      if (!hadExistingForwards) {
         this.attachExistingForwards(p)
       }
 
@@ -146,9 +147,10 @@ export class Room {
       await p.pc.setLocalDescription(answer)
       safeSend(p.ws, { type: 'answer', sdp: p.pc.localDescription!.sdp })
 
-      // Если только что добавили форварды — отдельный renegotiation offer, чтобы они доехали.
-      if (p.outgoing.size > 0 && !p.pc.localDescription?.sdp.includes('a=mid:') && false) {
-        // (выключено: проверка не работает, см. ниже) — рено всё равно сделаем после answer
+      // После answer отправляем отдельный server-initiated offer, чтобы
+      // доставить форварды от существующих участников новому клиенту.
+      if (!hadExistingForwards && p.outgoing.size > 0) {
+        await this.renegotiate(id)
       }
     } catch (e) {
       console.warn(`[SFU] handleOffer ${id.slice(0, 8)} failed`, e)

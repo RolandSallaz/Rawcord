@@ -38,6 +38,7 @@ export class SFUClient {
   private micVolume = 100
   private micMutedState = false
   private outputDeviceId = ''
+  private sdpQueue: Promise<void> = Promise.resolve()
 
   /** Текущее screen-share стрим (то что отдаём как наш video) */
   private screenStream: MediaStream | null = null
@@ -126,13 +127,18 @@ export class SFUClient {
     this.notifySharingChanged()
   }
 
-  /** Обработать SDP-сообщение от сервера */
+  /** Обработать SDP-сообщение от сервера (с последовательной очередью) */
   async handleSdp(type: 'offer' | 'answer', sdp: string): Promise<void> {
+    if (!this.pc) return
+    this.sdpQueue = this.sdpQueue.then(() => this._handleSdp(type, sdp))
+    return this.sdpQueue
+  }
+
+  private async _handleSdp(type: 'offer' | 'answer', sdp: string): Promise<void> {
     if (!this.pc) return
     if (type === 'answer') {
       await this.pc.setRemoteDescription({ type: 'answer', sdp })
     } else {
-      // Server-initiated renegotiation (новые форварды)
       await this.pc.setRemoteDescription({ type: 'offer', sdp })
       const answer = await this.pc.createAnswer()
       await this.pc.setLocalDescription(answer)
@@ -142,7 +148,9 @@ export class SFUClient {
 
   async handleIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (!this.pc) return
-    try { await this.pc.addIceCandidate(candidate) } catch { /* might race */ }
+    this.sdpQueue = this.sdpQueue.then(() =>
+      this.pc!.addIceCandidate(candidate).catch(() => {})
+    )
   }
 
   // ─── Participants events from server ──────────────────────────────────────
