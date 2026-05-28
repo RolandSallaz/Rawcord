@@ -1,6 +1,6 @@
 {
   "name": "rawcord",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "P2P Discord analog",
   "main": "out/main/index.js",
   "scripts": {
@@ -67,7 +67,7 @@
     "electron-builder": "^26.8.1",
     "electron-vite": "^2.3.0",
     "jest": "^29.7.0",
-    "jest-environment-jsdom": "^30.4.1",
+    "jest-environment-jsdom": "^29.7.0",
     "ts-jest": "^29.2.6",
     "typescript": "^5.5.2",
     "vite": "^5.3.1"

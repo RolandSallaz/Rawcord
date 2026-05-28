@@ -4,7 +4,8 @@
  * Unit тесты для PeerManager (src/renderer/src/lib/webrtc.ts)
  * Покрывает: mungeOpus SDP-transform, setStream / setMicGain / setMicMuted,
  * createPeer / signal / removePeer, startScreenShare / stopScreenShare,
- * destroyAll, VAD (voice activity detection), вспомогательные методы.
+ * destroyAll, VAD (voice activity detection), вспомогательные методы,
+ * onPeerDisconnected (критический callback для reconnect).
  */
 
 import { EventEmitter } from 'events'
@@ -26,10 +27,15 @@ jest.mock('simple-peer', () => {
       super()
       this._opts = opts
       ;(globalThis as unknown as Record<string, unknown[]>).__mockPeers.push(this)
+      // Real SimplePeer destroys itself on error, which then emits 'close'
+      this.on('error', () => this.destroy())
     }
 
     destroy() {
+      if (this.destroyed) return
       this.destroyed = true
+      // Real SimplePeer emits 'close' synchronously on destroy
+      this.emit('close')
     }
   }
 
@@ -239,7 +245,6 @@ describe('audio controls', () => {
   test('setMicGain зажимает значение ниже 0', () => {
     const stream = makeFakeStream([makeFakeTrack('audio')])
     pm.setStream(stream)
-    // не должно бросить исключение
     expect(() => pm.setMicGain(-50)).not.toThrow()
   })
 
@@ -253,13 +258,10 @@ describe('audio controls', () => {
     const stream = makeFakeStream([makeFakeTrack('audio')])
     pm.setStream(stream)
     pm.setMicMuted(true)
-    // Если gainNode существует, его value должно быть 0
-    // Проверяем через то, что unmute восстанавливает без ошибки
     expect(() => pm.setMicMuted(false)).not.toThrow()
   })
 
   test('setMicMuted без gainNode переключает track.enabled', () => {
-    // Намеренно ломаем AudioContext чтобы setStream упал на fallback
     const origAC = (global as Record<string, unknown>).AudioContext
     ;(global as Record<string, unknown>).AudioContext = class { constructor() { throw new Error('no ctx') } }
 
@@ -275,7 +277,6 @@ describe('audio controls', () => {
   })
 
   test('setDeafened заглушает все audio-элементы', () => {
-    // Просто не должно бросить исключение при пустом контейнере
     expect(() => pm.setDeafened(true)).not.toThrow()
     expect(() => pm.setDeafened(false)).not.toThrow()
   })
@@ -435,7 +436,6 @@ describe('screen sharing', () => {
     const screenStream = makeFakeStream([], [videoTrack])
     await pm.startScreenShare(screenStream)
     const [p1] = getPeers()
-    // addTrack вызван только один раз (только video)
     expect(p1.addTrack).toHaveBeenCalledTimes(1)
   })
 
@@ -480,10 +480,8 @@ describe('screen sharing', () => {
     const screenStream = makeFakeStream([], [videoTrack])
     await pm.startScreenShare(screenStream)
 
-    // Триггерим onended
     ;(videoTrack as unknown as { onended: (() => void) | null }).onended?.()
 
-    // После этого повторный stopScreenShare не должен бросать
     expect(() => pm.stopScreenShare()).not.toThrow()
   })
 })
@@ -541,17 +539,13 @@ describe('VAD (voice activity detection)', () => {
     const speakingCb = jest.fn()
     pm.onSpeakingChanged = speakingCb
 
-    // Подкладываем analyser перед emit('stream') — MockAudioContext.createAnalyser
-    // вернёт его при вызове из PeerManager
     const analyser = new MockAnalyserNode()
     analyser.getFloatTimeDomainData.mockImplementation((arr: Float32Array) => {
-      arr.fill(0.1) // RMS 0.1 > threshold 0.01 → говорит
+      arr.fill(0.1)
     })
     _nextAnalyser = analyser
 
     mockPeer.emit('stream', makeFakeStream([makeFakeTrack('audio')]))
-
-    // Прокручиваем VAD interval (80ms)
     jest.advanceTimersByTime(100)
 
     expect(speakingCb).toHaveBeenCalledWith(new Set(['speaker']))
@@ -574,9 +568,9 @@ describe('VAD (voice activity detection)', () => {
     _nextAnalyser = analyser
 
     mockPeer.emit('stream', makeFakeStream([makeFakeTrack('audio')]))
-    jest.advanceTimersByTime(100) // говорит
+    jest.advanceTimersByTime(100)
 
-    amplitude = 0 // замолчал
+    amplitude = 0
     jest.advanceTimersByTime(100)
 
     const lastCall = speakingCb.mock.calls[speakingCb.mock.calls.length - 1][0] as Set<string>
@@ -623,7 +617,6 @@ describe('remote video (screen share receive)', () => {
     const videoTrack = makeFakeTrack('video')
     mockPeer.emit('track', videoTrack, [makeFakeStream([], [videoTrack])])
 
-    // Трек закончился
     ;(videoTrack as unknown as { onended: (() => void) | null }).onended?.()
 
     const lastCall = sharingCb.mock.calls[sharingCb.mock.calls.length - 1][0] as Set<string>
@@ -661,5 +654,107 @@ describe('setOutputDevice', () => {
     const pm = new PeerManager(makeSig())
     expect(() => pm.setOutputDevice('device-123')).not.toThrow()
     pm.destroy()
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// 9. onPeerDisconnected — критический callback для reconnect
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('onPeerDisconnected', () => {
+  let pm: PeerManager
+
+  beforeEach(() => {
+    clearPeers()
+    pm = new PeerManager(makeSig())
+    pm.setStream(makeFakeStream([makeFakeTrack('audio')]))
+  })
+
+  afterEach(() => pm.destroy())
+
+  test('срабатывает при неожиданном close (не через removePeer)', () => {
+    pm.createPeer('peer1', 'Alice', true)
+    const cb = jest.fn()
+    pm.onPeerDisconnected = cb
+
+    // Emit close directly — unexpected disconnect (WebRTC dropped)
+    getPeers()[0].emit('close')
+
+    expect(cb).toHaveBeenCalledWith('peer1')
+  })
+
+  test('НЕ срабатывает при намеренном removePeer', () => {
+    pm.createPeer('peer1', 'Alice', true)
+    const cb = jest.fn()
+    pm.onPeerDisconnected = cb
+
+    pm.removePeer('peer1')
+
+    expect(cb).not.toHaveBeenCalled()
+  })
+
+  test('НЕ срабатывает при destroyAll', () => {
+    pm.createPeer('p1', 'A', true)
+    pm.createPeer('p2', 'B', false)
+    const cb = jest.fn()
+    pm.onPeerDisconnected = cb
+
+    pm.destroyAll()
+
+    expect(cb).not.toHaveBeenCalled()
+  })
+
+  test('НЕ срабатывает при неожиданном close если peer уже удалён', () => {
+    pm.createPeer('peer1', 'Alice', true)
+    const mockPeer = getPeers()[0]
+    const cb = jest.fn()
+    pm.onPeerDisconnected = cb
+
+    pm.removePeer('peer1')
+    cb.mockClear()
+
+    // Second close event (e.g. from stale reference) should not fire callback
+    mockPeer.emit('close')
+
+    expect(cb).not.toHaveBeenCalled()
+  })
+
+  test('после неожиданного отключения можно создать пира с тем же id', () => {
+    pm.createPeer('peer1', 'Alice', true)
+    pm.onPeerDisconnected = jest.fn()
+
+    // Unexpected disconnect
+    getPeers()[0].emit('close')
+
+    // Should be able to re-create the peer (reconnect flow)
+    clearPeers()
+    expect(() => pm.createPeer('peer1', 'Alice', false)).not.toThrow()
+    expect(pm.getPeerIds()).toContain('peer1')
+  })
+
+  test('срабатывает при error (неожиданный обрыв)', () => {
+    pm.createPeer('peer1', 'Alice', true)
+    const cb = jest.fn()
+    pm.onPeerDisconnected = cb
+
+    // Error event → destroy → close → onPeerDisconnected
+    getPeers()[0].emit('error', new Error('ICE failed'))
+
+    expect(cb).toHaveBeenCalledWith('peer1')
+  })
+
+  test('срабатывает независимо для каждого отключившегося пира', () => {
+    pm.createPeer('p1', 'Alice', true)
+    pm.createPeer('p2', 'Bob', false)
+    const cb = jest.fn()
+    pm.onPeerDisconnected = cb
+
+    const [mockP1, mockP2] = getPeers()
+    mockP1.emit('close')
+    mockP2.emit('close')
+
+    expect(cb).toHaveBeenCalledTimes(2)
+    expect(cb).toHaveBeenCalledWith('p1')
+    expect(cb).toHaveBeenCalledWith('p2')
   })
 })

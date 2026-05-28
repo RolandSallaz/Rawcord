@@ -204,6 +204,8 @@ export class PeerManager {
     })
 
     peer.on('close', () => {
+      // Guard: if peer was already cleaned up (e.g. stale second close), ignore
+      if (!this.peers.has(peerId)) return
       const intended = this.intendedRemovals.has(peerId)
       if (!intended) {
         // Unexpected disconnect — notify caller so it can attempt reconnection
