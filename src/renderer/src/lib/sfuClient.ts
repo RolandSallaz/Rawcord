@@ -39,6 +39,7 @@ export class SFUClient {
   private micMutedState = false
   private outputDeviceId = ''
   private sdpQueue: Promise<void> = Promise.resolve()
+  private restartingIce = false
 
   /** Текущее screen-share стрим (то что отдаём как наш video) */
   private screenStream: MediaStream | null = null
@@ -87,12 +88,15 @@ export class SFUClient {
     pc.addEventListener('iceconnectionstatechange', () => {
       console.log(`[SFUClient] iceConnectionState=${pc.iceConnectionState}`)
       if (pc.iceConnectionState === 'failed') {
-        try { pc.restartIce() } catch { /* ignore */ }
+        this.handleIceRestart().catch(() => {})
       }
     })
 
     pc.addEventListener('connectionstatechange', () => {
       console.log(`[SFUClient] connectionState=${pc.connectionState}`)
+      if (pc.connectionState === 'failed') {
+        this.handleIceRestart().catch(() => {})
+      }
     })
 
     pc.addEventListener('track', (e) => {
@@ -146,11 +150,29 @@ export class SFUClient {
     }
   }
 
+  /** После restartIce нужно послать новый offer с обновлёнными ICE credentials */
+  private async handleIceRestart(): Promise<void> {
+    if (!this.pc || this.restartingIce) return
+    this.restartingIce = true
+    this.sdpQueue = this.sdpQueue.then(async () => {
+      this.restartingIce = false
+      if (!this.pc) return
+      try {
+        this.pc.restartIce()
+        const offer = await this.pc.createOffer()
+        await this.pc.setLocalDescription(offer)
+        this.signaling.send({ type: 'offer', sdp: this.pc.localDescription!.sdp })
+      } catch (e) {
+        console.warn('[SFUClient] ICE restart failed', e)
+      }
+    })
+  }
+
   async handleIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (!this.pc) return
-    this.sdpQueue = this.sdpQueue.then(() =>
-      this.pc!.addIceCandidate(candidate).catch(() => {})
-    )
+    try { await this.pc.addIceCandidate(candidate) } catch (e) {
+      console.warn('[SFUClient] addIceCandidate failed (may race with setRemoteDescription)', e)
+    }
   }
 
   // ─── Participants events from server ──────────────────────────────────────

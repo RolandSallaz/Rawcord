@@ -228,8 +228,8 @@ export default function ChannelPage() {
     try {
       const audioConstraints: MediaTrackConstraints = {
         deviceId: settings.inputDeviceId ? { exact: settings.inputDeviceId } : undefined,
-        noiseSuppression: settings.noiseSuppression,
-        echoCancellation: true,
+        noiseSuppression: false,
+        echoCancellation: false,
       }
       stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false })
     } catch {
