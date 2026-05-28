@@ -85,8 +85,13 @@ export class PeerManager {
     try {
       const ctx = new AudioContext()
       this.micAudioCtx = ctx
-      // AudioContext may start suspended due to browser autoplay policy
+      // AudioContext may start suspended due to browser autoplay policy.
+      // Also auto-resume if the browser suspends it later (e.g. window lost focus) —
+      // otherwise the mic audio graph stops processing and the remote side hears silence.
       if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+      ctx.addEventListener('statechange', () => {
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+      })
       const src = ctx.createMediaStreamSource(stream)
       const gain = ctx.createGain()
       gain.gain.value = this.micVolume / 100
@@ -161,7 +166,15 @@ export class PeerManager {
         this.audioContainer.appendChild(audio)
 
         // VAD: route source through a silent gain to force graph processing
-        if (!this.audioCtx) this.audioCtx = new AudioContext()
+        if (!this.audioCtx) {
+          this.audioCtx = new AudioContext()
+          // Auto-resume if the browser suspends it later — otherwise VAD stops
+          // working and (more importantly) the audio graph that helps drive the
+          // remote stream may stall.
+          this.audioCtx.addEventListener('statechange', () => {
+            if (this.audioCtx?.state === 'suspended') this.audioCtx.resume().catch(() => {})
+          })
+        }
         if (this.audioCtx.state === 'suspended') this.audioCtx.resume().catch(() => {})
         const source = this.audioCtx.createMediaStreamSource(remoteStream)
         const analyser = this.audioCtx.createAnalyser()

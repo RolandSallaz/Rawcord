@@ -335,6 +335,9 @@ export default function ChannelPage() {
     try {
       const ctx = new AudioContext()
       if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+      ctx.addEventListener('statechange', () => {
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+      })
       const src = ctx.createMediaStreamSource(stream)
       const analyser = ctx.createAnalyser()
       analyser.fftSize = 512
