@@ -1,12 +1,15 @@
 /**
- * WebSocket-based audio client.
- * Captures mic via AudioWorklet → sends Int16 PCM frames over WebSocket.
- * Receives Int16 PCM frames → plays via scheduled AudioBufferSourceNode.
+ * WebSocket-based audio + video client.
  *
- * No WebRTC — works through any NAT/firewall on a single TCP port.
+ * Audio: Int16 PCM frames sent as 0x01 binary frames.
+ * Video: WebM chunks from MediaRecorder sent as 0x02 binary frames.
+ *        Received chunks fed into MSE (MediaSource Extensions) per sender.
+ *
+ * System audio during screen share: Web Audio phase-cancellation removes
+ * the Rawcord voice output from the loopback capture (best-effort).
  */
 
-import type { SignalingClient } from './signaling'
+import type { SignalingClient, StreamerInfo } from './signaling'
 
 export interface PeerInfo {
   id: string
@@ -14,21 +17,17 @@ export interface PeerInfo {
   avatar?: string
 }
 
-const SAMPLE_RATE = 48000
-const FRAME_SAMPLES = 1920  // 40 ms at 48 kHz — good balance of latency vs message rate
-const JITTER_BUF_SEC = 0.06 // 60 ms jitter buffer
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-// Inline AudioWorklet code loaded as blob URL to avoid Vite/worker complications
+const SAMPLE_RATE = 48000
+const FRAME_SAMPLES = 1920   // 40 ms
+const JITTER_BUF_SEC = 0.06  // 60 ms jitter buffer
+
 const MIC_WORKLET_CODE = `
 class MicCaptureProcessor extends AudioWorkletProcessor {
-  constructor() {
-    super()
-    this._buf = []
-    this._frameSize = ${FRAME_SAMPLES}
-  }
+  constructor() { super(); this._buf = []; this._frameSize = ${FRAME_SAMPLES} }
   process(inputs) {
-    const ch = inputs[0]?.[0]
-    if (!ch) return true
+    const ch = inputs[0]?.[0]; if (!ch) return true
     for (let i = 0; i < ch.length; i++) this._buf.push(ch[i])
     while (this._buf.length >= this._frameSize) {
       const chunk = this._buf.splice(0, this._frameSize)
@@ -44,14 +43,77 @@ class MicCaptureProcessor extends AudioWorkletProcessor {
 registerProcessor('mic-capture', MicCaptureProcessor)
 `
 
+// ─── VideoReceiver: MSE-based stream player ───────────────────────────────────
+
+class VideoReceiver {
+  private ms = new MediaSource()
+  private sb: SourceBuffer | null = null
+  private queue: ArrayBuffer[] = []
+  private url: string
+  readonly el: HTMLVideoElement
+
+  constructor(mimeType: string) {
+    this.el = document.createElement('video')
+    this.el.autoplay = true
+    this.el.playsInline = true
+    this.el.style.width = '100%'
+    this.el.style.display = 'block'
+    this.el.muted = false
+
+    this.url = URL.createObjectURL(this.ms)
+    this.el.src = this.url
+
+    this.ms.addEventListener('sourceopen', () => {
+      if (this.ms.readyState !== 'open') return
+      try {
+        this.sb = this.ms.addSourceBuffer(mimeType)
+        this.sb.addEventListener('updateend', () => this.drainQueue())
+        this.drainQueue()
+      } catch (e) {
+        console.warn('[VideoReceiver] addSourceBuffer failed:', mimeType, e)
+      }
+    })
+  }
+
+  append(chunk: ArrayBuffer) {
+    this.queue.push(chunk)
+    if (this.sb && !this.sb.updating) this.drainQueue()
+  }
+
+  private drainQueue() {
+    while (this.queue.length > 0 && this.sb && !this.sb.updating) {
+      try {
+        this.sb.appendBuffer(this.queue.shift()!)
+      } catch (e) {
+        console.warn('[VideoReceiver] appendBuffer error:', e)
+        this.queue = []   // clear on error, wait for next keyframe
+      }
+    }
+  }
+
+  destroy() {
+    this.sb = null
+    try { if (this.ms.readyState === 'open') this.ms.endOfStream() } catch {}
+    URL.revokeObjectURL(this.url)
+    this.el.src = ''
+    this.el.removeAttribute('src')
+    this.el.load()
+  }
+}
+
+// ─── WsAudioClient ─────────────────────────────────────────────────────────────
+
 export class WsAudioClient {
   private signaling: SignalingClient
+
+  // Mic capture
   private micStream: MediaStream | null = null
   private micCtx: AudioContext | null = null
   private micWorkletNode: AudioWorkletNode | null = null
   private micMuted = false
-  private micGain = 100
+  private micVolume = 100
 
+  // Playback
   private playCtx: AudioContext | null = null
   private masterGain: GainNode | null = null
   private deafened = false
@@ -62,35 +124,44 @@ export class WsAudioClient {
   // VAD
   private speakingPeers = new Set<string>()
   private peerRmsWindow = new Map<string, number[]>()
-  private vadTimer: ReturnType<typeof setInterval> | null = null
-
-  // Local VAD
   private localRms = 0
   private localVadTimer: ReturnType<typeof setInterval> | null = null
 
+  // Screen share — sender
+  private screenRecorder: MediaRecorder | null = null
+  private screenStream: MediaStream | null = null
+  private cancelCtx: AudioContext | null = null  // for voice cancellation from sys audio
+
+  // Screen share — receiver
+  private videoReceivers = new Map<string, VideoReceiver>()
+
+  // Callbacks
   onSpeakingChanged: (speaking: Set<string>) => void = () => {}
   onLocalSpeaking: (speaking: boolean) => void = () => {}
+  onStreamStarted: (peerId: string, el: HTMLVideoElement) => void = () => {}
+  onStreamStopped: (peerId: string) => void = () => {}
+  onRemoteStreamMimeType = new Map<string, string>()   // peerId → mimeType
 
   constructor(signaling: SignalingClient) {
     this.signaling = signaling
-    signaling.on('onAudioFrame', (senderId, pcm) => this.handleIncoming(senderId, pcm))
+
+    signaling.on('onAudioFrame', (id, payload) => this.handleAudioFrame(id, payload))
+    signaling.on('onVideoFrame', (id, chunk) => this.handleVideoFrame(id, chunk))
+    signaling.on('onStreamStarted', (id, mimeType) => this.handleStreamStarted(id, mimeType))
+    signaling.on('onStreamStopped', (id) => this.handleStreamStopped(id))
   }
 
-  // ─── Setup ────────────────────────────────────────────────────────────────
+  // ─── Setup ─────────────────────────────────────────────────────────────────
 
-  setStream(stream: MediaStream) {
-    this.micStream = stream
-  }
+  setStream(stream: MediaStream) { this.micStream = stream }
 
   async startCapture(): Promise<void> {
     if (!this.micStream) return
-
     const ctx = new AudioContext({ sampleRate: SAMPLE_RATE })
     this.micCtx = ctx
     ctx.addEventListener('statechange', () => {
       if (ctx.state === 'suspended') ctx.resume().catch(() => {})
     })
-
     const blob = new Blob([MIC_WORKLET_CODE], { type: 'application/javascript' })
     const url = URL.createObjectURL(blob)
     try {
@@ -98,32 +169,35 @@ export class WsAudioClient {
     } finally {
       URL.revokeObjectURL(url)
     }
-
     const source = ctx.createMediaStreamSource(this.micStream)
     const worklet = new AudioWorkletNode(ctx, 'mic-capture')
     this.micWorkletNode = worklet
 
     worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
       if (this.micMuted) return
-      this.signaling.sendBinary(e.data)
+      this.signaling.sendBinary(0x01, e.data)
       // Local VAD
       const i16 = new Int16Array(e.data)
-      let sum = 0
-      for (let i = 0; i < i16.length; i++) {
-        const f = i16[i] / 32768
-        sum += f * f
-      }
+      let sum = 0; for (let i = 0; i < i16.length; i++) { const f = i16[i] / 32768; sum += f * f }
       this.localRms = Math.sqrt(sum / i16.length)
     }
 
     source.connect(worklet)
-    // worklet doesn't need to connect to destination (no monitoring)
 
-    // Local speaking detection
     this.localVadTimer = setInterval(() => {
       this.onLocalSpeaking(this.localRms > 0.01)
     }, 80)
   }
+
+  /** Initialize known streamers (received in welcome) */
+  initStreamers(streamers: StreamerInfo[]) {
+    for (const s of streamers) {
+      this.onRemoteStreamMimeType.set(s.id, s.mimeType)
+      // VideoReceiver will be created on first video frame
+    }
+  }
+
+  // ─── Audio playback ────────────────────────────────────────────────────────
 
   private getPlayCtx(): AudioContext {
     if (this.playCtx) return this.playCtx
@@ -150,67 +224,173 @@ export class WsAudioClient {
     return g
   }
 
-  // ─── Incoming audio ───────────────────────────────────────────────────────
+  /** Returns a MediaStream of all received peer audio (for system-audio cancellation) */
+  getVoiceOutputStream(): MediaStream | null {
+    if (!this.playCtx || !this.masterGain) return null
+    try {
+      const dest = this.playCtx.createMediaStreamDestination()
+      this.masterGain.connect(dest)
+      return dest.stream
+    } catch { return null }
+  }
 
-  handleIncoming(peerId: string, data: ArrayBuffer) {
+  // ─── Incoming audio ─────────────────────────────────────────────────────────
+
+  private handleAudioFrame(peerId: string, data: ArrayBuffer) {
     const int16 = new Int16Array(data)
 
-    // RMS for VAD
+    // VAD
     let sum = 0
-    for (let i = 0; i < int16.length; i++) {
-      const f = int16[i] / 32768
-      sum += f * f
-    }
+    for (let i = 0; i < int16.length; i++) { const f = int16[i] / 32768; sum += f * f }
     const rms = Math.sqrt(sum / int16.length)
     let win = this.peerRmsWindow.get(peerId)
     if (!win) { win = []; this.peerRmsWindow.set(peerId, win) }
-    win.push(rms)
-    if (win.length > 4) win.shift()
-    const avgRms = win.reduce((a, b) => a + b, 0) / win.length
-    const wasSpeaking = this.speakingPeers.has(peerId)
-    const isSpeaking = avgRms > 0.005
-    if (isSpeaking !== wasSpeaking) {
-      isSpeaking ? this.speakingPeers.add(peerId) : this.speakingPeers.delete(peerId)
-      this.onSpeakingChanged(new Set(this.speakingPeers))
-    }
+    win.push(rms); if (win.length > 4) win.shift()
+    const avg = win.reduce((a, b) => a + b, 0) / win.length
+    const was = this.speakingPeers.has(peerId)
+    const is = avg > 0.005
+    if (is !== was) { is ? this.speakingPeers.add(peerId) : this.speakingPeers.delete(peerId); this.onSpeakingChanged(new Set(this.speakingPeers)) }
 
     if (this.deafened) return
-    this.scheduleAudio(peerId, int16)
-  }
 
-  private scheduleAudio(peerId: string, int16: Int16Array) {
     const ctx = this.getPlayCtx()
     const float32 = new Float32Array(int16.length)
     for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768
-
     const buffer = ctx.createBuffer(1, float32.length, SAMPLE_RATE)
     buffer.copyToChannel(float32, 0)
-    const duration = float32.length / SAMPLE_RATE
-
     const source = ctx.createBufferSource()
     source.buffer = buffer
     source.connect(this.getPeerGain(peerId))
-
     const now = ctx.currentTime
     const prev = this.nextPlayTimes.get(peerId) ?? 0
     const startAt = Math.max(now + JITTER_BUF_SEC, prev)
     source.start(startAt)
-    this.nextPlayTimes.set(peerId, startAt + duration)
+    this.nextPlayTimes.set(peerId, startAt + float32.length / SAMPLE_RATE)
   }
 
-  // ─── Controls ─────────────────────────────────────────────────────────────
+  // ─── Screen share — receiver ────────────────────────────────────────────────
+
+  private handleVideoFrame(peerId: string, chunk: ArrayBuffer) {
+    let receiver = this.videoReceivers.get(peerId)
+    if (!receiver) {
+      // Create receiver lazily on first video frame
+      const mimeType = this.onRemoteStreamMimeType.get(peerId) ?? 'video/webm'
+      receiver = new VideoReceiver(mimeType)
+      this.videoReceivers.set(peerId, receiver)
+      this.onStreamStarted(peerId, receiver.el)
+    }
+    receiver.append(chunk)
+  }
+
+  private handleStreamStarted(peerId: string, mimeType: string) {
+    this.onRemoteStreamMimeType.set(peerId, mimeType)
+    // VideoReceiver created lazily when first chunk arrives
+  }
+
+  private handleStreamStopped(peerId: string) {
+    const receiver = this.videoReceivers.get(peerId)
+    if (receiver) { receiver.destroy(); this.videoReceivers.delete(peerId) }
+    this.onRemoteStreamMimeType.delete(peerId)
+    this.onStreamStopped(peerId)
+  }
+
+  // ─── Screen share — sender ──────────────────────────────────────────────────
+
+  /**
+   * Start screen sharing.
+   * captureStream: from getDisplayMedia (video + optional audio)
+   * If captureStream has audio, attempts to cancel Rawcord voices from it.
+   */
+  async startScreenShare(captureStream: MediaStream): Promise<void> {
+    if (this.screenRecorder) return
+
+    const videoTrack = captureStream.getVideoTracks()[0]
+    if (!videoTrack) throw new Error('No video track')
+
+    let streamToRecord = captureStream
+
+    // System audio: subtract Rawcord voice output (best-effort phase cancellation)
+    const sysAudioTrack = captureStream.getAudioTracks()[0]
+    if (sysAudioTrack) {
+      const voiceStream = this.getVoiceOutputStream()
+      if (voiceStream && voiceStream.getAudioTracks().length > 0) {
+        try {
+          const ctx = new AudioContext()
+          this.cancelCtx = ctx
+          const sysSrc = ctx.createMediaStreamSource(new MediaStream([sysAudioTrack]))
+          const voiceSrc = ctx.createMediaStreamSource(voiceStream)
+          // Delay voice reference ~20ms to match system-audio loopback latency
+          const delay = ctx.createDelay(0.1)
+          delay.delayTime.value = 0.02
+          const cancelGain = ctx.createGain()
+          cancelGain.gain.value = -1   // invert
+          const dest = ctx.createMediaStreamDestination()
+          sysSrc.connect(dest)
+          voiceSrc.connect(delay)
+          delay.connect(cancelGain)
+          cancelGain.connect(dest)
+          const cleanAudio = dest.stream.getAudioTracks()[0]
+          streamToRecord = new MediaStream([videoTrack, cleanAudio])
+        } catch {
+          // Cancellation failed — fall back to raw system audio
+        }
+      }
+    }
+
+    const mimeType = this.pickMimeType()
+    this.signaling.streamStart(mimeType)
+
+    const recorder = new MediaRecorder(streamToRecord, {
+      mimeType,
+      videoBitsPerSecond: 1_500_000,
+    })
+
+    recorder.ondataavailable = async (e) => {
+      if (e.data.size === 0) return
+      const buf = await e.data.arrayBuffer()
+      this.signaling.sendBinary(0x02, buf)
+    }
+
+    recorder.start(200)   // 200ms chunks
+    this.screenRecorder = recorder
+    this.screenStream = captureStream
+
+    videoTrack.addEventListener('ended', () => { this.stopScreenShare() })
+  }
+
+  stopScreenShare() {
+    if (!this.screenRecorder) return
+    this.screenRecorder.stop()
+    this.screenRecorder = null
+    this.screenStream?.getTracks().forEach(t => t.stop())
+    this.screenStream = null
+    this.cancelCtx?.close()
+    this.cancelCtx = null
+    this.signaling.streamStop()
+  }
+
+  isSharing(): boolean { return this.screenRecorder !== null }
+
+  private pickMimeType(): string {
+    const candidates = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+    ]
+    return candidates.find(m => MediaRecorder.isTypeSupported(m)) ?? 'video/webm'
+  }
+
+  // ─── Controls ──────────────────────────────────────────────────────────────
 
   setMicMuted(muted: boolean) {
     this.micMuted = muted
-    if (this.micStream) {
-      this.micStream.getAudioTracks().forEach(t => { t.enabled = !muted })
-    }
+    this.micStream?.getAudioTracks().forEach(t => { t.enabled = !muted })
   }
 
   setMicGain(volume: number) {
-    this.micGain = Math.max(0, Math.min(200, volume))
-    // Mic gain is applied via stream track (hardware level if supported)
-    // For fine control, a GainNode before the worklet could be added later
+    this.micVolume = Math.max(0, Math.min(200, volume))
   }
 
   setDeafened(deafened: boolean) {
@@ -218,13 +398,11 @@ export class WsAudioClient {
     if (this.masterGain) this.masterGain.gain.value = deafened ? 0 : 1
   }
 
-  setOutputDevice(_deviceId: string) {
-    this.outputDeviceId = _deviceId
-    // AudioContext doesn't expose setSinkId directly;
-    // use AudioContext.setSinkId() when available (Chrome 110+)
+  setOutputDevice(deviceId: string) {
+    this.outputDeviceId = deviceId
     if (this.playCtx && 'setSinkId' in this.playCtx) {
       (this.playCtx as unknown as { setSinkId: (id: string) => Promise<void> })
-        .setSinkId(_deviceId).catch(() => {})
+        .setSinkId(deviceId).catch(() => {})
     }
   }
 
@@ -244,28 +422,37 @@ export class WsAudioClient {
     this.nextPlayTimes.delete(peerId)
     this.peerRmsWindow.delete(peerId)
     this.speakingPeers.delete(peerId)
+    // Also clean up any video receiver for this peer
+    this.handleStreamStopped(peerId)
   }
 
-  // ─── Lifecycle ────────────────────────────────────────────────────────────
+  getVideoElement(peerId: string): HTMLVideoElement | null {
+    return this.videoReceivers.get(peerId)?.el ?? null
+  }
+
+  getActiveStreamers(): string[] {
+    return [...this.videoReceivers.keys()]
+  }
+
+  // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
   destroy() {
     if (this.localVadTimer) { clearInterval(this.localVadTimer); this.localVadTimer = null }
-    if (this.vadTimer) { clearInterval(this.vadTimer); this.vadTimer = null }
+    this.stopScreenShare()
 
     this.micWorkletNode?.disconnect()
     this.micWorkletNode = null
-    this.micCtx?.close()
-    this.micCtx = null
-
-    this.micStream?.getTracks().forEach(t => t.stop())
-    this.micStream = null
+    this.micCtx?.close(); this.micCtx = null
+    this.micStream?.getTracks().forEach(t => t.stop()); this.micStream = null
 
     for (const g of this.peerGains.values()) g.disconnect()
     this.peerGains.clear()
-    this.masterGain?.disconnect()
-    this.masterGain = null
-    this.playCtx?.close()
-    this.playCtx = null
+    this.masterGain?.disconnect(); this.masterGain = null
+    this.playCtx?.close(); this.playCtx = null
+
+    for (const r of this.videoReceivers.values()) r.destroy()
+    this.videoReceivers.clear()
+    this.onRemoteStreamMimeType.clear()
 
     this.nextPlayTimes.clear()
     this.peerRmsWindow.clear()

@@ -1,13 +1,17 @@
 /**
- * Pure WebSocket relay server — no WebRTC/SFU.
+ * Pure WebSocket relay server.
  *
  * Text frames (JSON):
- *   C→S: join | announce | chat | leave
- *   S→C: welcome | participant-joined | participant-left | participant-updated | chat
+ *   C→S: join | announce | chat | leave | ping | stream-start | stream-stop
+ *   S→C: welcome | participant-joined | participant-left | participant-updated |
+ *        stream-started | stream-stopped | chat
  *
  * Binary frames:
- *   C→S: raw PCM Int16 audio (960 samples, 48 kHz mono = 20 ms)
- *   S→C: [36-byte ASCII sender UUID] + same PCM data
+ *   C→S: [1 byte type: 0x01=audio, 0x02=video] + payload
+ *   S→C: [36-byte ASCII sender UUID] + [1 byte type] + payload
+ *
+ * Video init-chunk (first 0x02 frame per sender) is stored per-room so late
+ * viewers can initialise their MSE SourceBuffer when joining mid-stream.
  */
 import { WebSocketServer, WebSocket } from 'ws'
 import { randomUUID } from 'crypto'
@@ -19,6 +23,11 @@ export interface ParticipantInfo {
   avatar?: string
 }
 
+interface StreamerInfo {
+  mimeType: string
+  initChunk: string   // base64 — first video chunk, contains WebM init segment
+}
+
 interface RoomClient extends ParticipantInfo {
   ws: WebSocket
   isAlive: boolean
@@ -26,25 +35,25 @@ interface RoomClient extends ParticipantInfo {
 
 class Room {
   private clients = new Map<string, RoomClient>()
+  /** Active screen-share streamers keyed by participant ID */
+  streamers = new Map<string, StreamerInfo>()
 
   add(id: string, ws: WebSocket, info: ParticipantInfo) {
     this.clients.set(id, { ...info, ws, isAlive: true })
-    // Notify existing members
     this.broadcast({ type: 'participant-joined', participant: info }, id)
   }
 
-  remove(id: string): ParticipantInfo | undefined {
-    const c = this.clients.get(id)
+  remove(id: string) {
     this.clients.delete(id)
-    if (c) this.broadcast({ type: 'participant-left', id })
-    return c
+    this.streamers.delete(id)
+    this.broadcast({ type: 'participant-left', id })
   }
 
   update(id: string, info: Partial<ParticipantInfo>) {
     const c = this.clients.get(id)
     if (!c) return
     Object.assign(c, info)
-    this.broadcast({ type: 'participant-updated', participant: { ...c, ws: undefined } }, id)
+    this.broadcast({ type: 'participant-updated', participant: { id: c.id, nickname: c.nickname, avatar: c.avatar } }, id)
   }
 
   list(): ParticipantInfo[] {
@@ -65,6 +74,22 @@ class Room {
     for (const [id, c] of this.clients) {
       if (id === excludeId) continue
       try { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(buf, { binary: true }) } catch {}
+    }
+  }
+
+  /** Send the stored init-chunk to a specific client so they can start MSE */
+  sendInitChunks(targetId: string) {
+    const c = this.clients.get(targetId)
+    if (!c) return
+    for (const [senderId, info] of this.streamers) {
+      try {
+        if (c.ws.readyState !== WebSocket.OPEN) continue
+        // Send as binary: [36 ID] + [0x02] + [init chunk bytes]
+        const initBuf = Buffer.from(info.initChunk, 'base64')
+        const idBuf = Buffer.from(senderId.padEnd(36).slice(0, 36), 'ascii')
+        const typeBuf = Buffer.alloc(1); typeBuf[0] = 0x02
+        c.ws.send(Buffer.concat([idBuf, typeBuf, initBuf]), { binary: true })
+      } catch {}
     }
   }
 
@@ -91,6 +116,7 @@ interface TaggedWS extends WebSocket {
   _nickname?: string
   _avatar?: string
   isAlive?: boolean
+  _initSent?: boolean   // whether we've stored this sender's video init chunk
 }
 
 function handleLeave(ws: TaggedWS) {
@@ -115,21 +141,37 @@ export function startServer(port: number): Promise<void> {
       ws.isAlive = true
       ws.on('pong', () => { ws.isAlive = true })
       ws._peerId = randomUUID()
+      ws._initSent = false
 
       ws.on('message', (raw, isBinary) => {
         const id = ws._peerId!
 
-        // Binary = audio frame, relay immediately
         if (isBinary) {
           try {
+            const payload = Buffer.isBuffer(raw) ? raw : Buffer.concat(raw as Buffer[])
+            if (payload.length === 0) return
+
+            const typeByte = payload[0]          // 0x01=audio, 0x02=video
+            const data = payload.slice(1)          // actual payload
+
             const channel = ws._channel
             if (!channel) return
             const room = rooms.get(channel)
             if (!room) return
-            // raw may be Buffer | Buffer[] depending on fragmentation
-            const payload = Buffer.isBuffer(raw) ? raw : Buffer.concat(raw as Buffer[])
+
+            // For video: store first chunk as init segment for late viewers
+            if (typeByte === 0x02 && !ws._initSent) {
+              ws._initSent = true
+              const streamer = room.streamers.get(id)
+              if (streamer) {
+                streamer.initChunk = data.toString('base64')
+              }
+            }
+
+            // Relay: prepend [36-byte sender ID] + [type byte]
             const idBuf = Buffer.from(id.padEnd(36).slice(0, 36), 'ascii')
-            room.broadcastBinary(Buffer.concat([idBuf, payload]), id)
+            const typeBuf = Buffer.alloc(1); typeBuf[0] = typeByte
+            room.broadcastBinary(Buffer.concat([idBuf, typeBuf, data]), id)
           } catch (e) {
             console.warn('[signaling] binary relay error:', e)
           }
@@ -150,17 +192,43 @@ export function startServer(port: number): Promise<void> {
               ws._avatar = avatar
               const room = getOrCreateRoom(channel)
               const existing = room.list()
+              // Current streamers for late-join
+              const streamers = [...room.streamers.entries()].map(([sid, info]) => ({
+                id: sid, mimeType: info.mimeType,
+              }))
               room.add(id, ws, { id, nickname, avatar })
-              safeSend(ws, { type: 'welcome', id, participants: existing })
+              safeSend(ws, { type: 'welcome', id, participants: existing, streamers })
+              // Send stored init chunks immediately so they can start MSE
+              room.sendInitChunks(id)
               break
             }
 
             case 'announce': {
               const { nickname, avatar } = msg as { nickname: string; avatar?: string }
               if (!nickname || !ws._channel) return
-              ws._nickname = nickname
-              ws._avatar = avatar
+              ws._nickname = nickname; ws._avatar = avatar
               rooms.get(ws._channel)?.update(id, { nickname, avatar })
+              break
+            }
+
+            case 'stream-start': {
+              const { mimeType } = msg as { mimeType: string }
+              if (!mimeType || !ws._channel) return
+              const room = rooms.get(ws._channel)
+              if (!room) return
+              room.streamers.set(id, { mimeType, initChunk: '' })
+              ws._initSent = false  // reset so next binary stores new init chunk
+              room.broadcast({ type: 'stream-started', from: id, mimeType }, id)
+              break
+            }
+
+            case 'stream-stop': {
+              if (!ws._channel) return
+              const room = rooms.get(ws._channel)
+              if (!room) return
+              room.streamers.delete(id)
+              ws._initSent = false
+              room.broadcast({ type: 'stream-stopped', from: id }, id)
               break
             }
 
@@ -169,19 +237,13 @@ export function startServer(port: number): Promise<void> {
               if (!text || !ws._channel) return
               rooms.get(ws._channel)?.broadcast({
                 type: 'chat', from: id, text,
-                nickname: ws._nickname ?? 'unknown',
-                avatar: ws._avatar,
+                nickname: ws._nickname ?? 'unknown', avatar: ws._avatar,
               }, id)
               break
             }
 
-            case 'ping':
-              // application-level heartbeat — no response needed
-              break
-
-            case 'leave':
-              handleLeave(ws)
-              break
+            case 'ping': break   // application-level heartbeat
+            case 'leave': handleLeave(ws); break
           }
         } catch (e) {
           console.warn('[signaling] error:', e)
@@ -192,7 +254,6 @@ export function startServer(port: number): Promise<void> {
       ws.on('error', () => handleLeave(ws))
     })
 
-    // Keepalive ping
     const pingInterval = setInterval(() => {
       wss?.clients.forEach((ws) => {
         const w = ws as TaggedWS

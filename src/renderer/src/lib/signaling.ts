@@ -1,7 +1,10 @@
 /**
  * Thin WebSocket client for signaling.
- * Text frames: JSON room management (join/leave/chat/participant events).
- * Binary frames: audio PCM relay — first 36 bytes = sender UUID, rest = PCM.
+ *
+ * Text frames: JSON room management.
+ * Binary frames:
+ *   Received: [36-byte ASCII sender ID] + [1-byte type: 0x01=audio, 0x02=video] + payload
+ *   Sent:     [1-byte type] + payload
  */
 
 export interface ParticipantInfo {
@@ -10,13 +13,21 @@ export interface ParticipantInfo {
   avatar?: string
 }
 
+export interface StreamerInfo {
+  id: string
+  mimeType: string
+}
+
 export interface SignalingHandlers {
-  onWelcome: (data: { id: string; participants: ParticipantInfo[] }) => void
+  onWelcome: (data: { id: string; participants: ParticipantInfo[]; streamers: StreamerInfo[] }) => void
   onParticipantJoined: (participant: ParticipantInfo) => void
   onParticipantLeft: (id: string) => void
   onParticipantUpdated: (participant: ParticipantInfo) => void
+  onStreamStarted: (from: string, mimeType: string) => void
+  onStreamStopped: (from: string) => void
   onChat: (from: string, text: string, nickname: string, avatar?: string) => void
-  onAudioFrame: (senderId: string, pcm: ArrayBuffer) => void
+  onAudioFrame: (senderId: string, payload: ArrayBuffer) => void
+  onVideoFrame: (senderId: string, chunk: ArrayBuffer) => void
   onClose: () => void
 }
 
@@ -40,7 +51,6 @@ export class SignalingClient {
 
       this.ws.onopen = () => {
         clearTimeout(timer)
-        // Application-level heartbeat — keeps the connection alive through proxies/NAT
         this.heartbeatTimer = setInterval(() => {
           if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ type: 'ping' }))
@@ -48,21 +58,27 @@ export class SignalingClient {
         }, 5000)
         resolve()
       }
+
       this.ws.onerror = () => {
         clearTimeout(timer)
-        // Trigger onClose so ChannelPage schedules a reconnect
         this.handlers.onClose?.()
         reject(new Error('Cannot connect to server'))
       }
 
       this.ws.onmessage = (e) => {
+        // Binary: [36-byte sender ID] + [1-byte type] + payload
         if (e.data instanceof ArrayBuffer) {
-          // Binary: [36 bytes ASCII sender ID] [PCM data]
-          if (e.data.byteLength < 36) return
+          if (e.data.byteLength < 37) return   // need at least ID(36) + type(1)
           const idBytes = new Uint8Array(e.data, 0, 36)
           const senderId = new TextDecoder().decode(idBytes).trimEnd()
-          const pcm = e.data.slice(36)
-          this.handlers.onAudioFrame?.(senderId, pcm)
+          const typeByte = new Uint8Array(e.data, 36, 1)[0]
+          const payload = e.data.slice(37)
+
+          if (typeByte === 0x01) {
+            this.handlers.onAudioFrame?.(senderId, payload)
+          } else if (typeByte === 0x02) {
+            this.handlers.onVideoFrame?.(senderId, payload)
+          }
           return
         }
 
@@ -74,6 +90,7 @@ export class SignalingClient {
             this.handlers.onWelcome?.({
               id: msg.id as string,
               participants: msg.participants as ParticipantInfo[],
+              streamers: (msg.streamers as StreamerInfo[]) ?? [],
             })
             break
           case 'participant-joined':
@@ -85,18 +102,25 @@ export class SignalingClient {
           case 'participant-updated':
             this.handlers.onParticipantUpdated?.(msg.participant as ParticipantInfo)
             break
+          case 'stream-started':
+            this.handlers.onStreamStarted?.(msg.from as string, msg.mimeType as string)
+            break
+          case 'stream-stopped':
+            this.handlers.onStreamStopped?.(msg.from as string)
+            break
           case 'chat':
             this.handlers.onChat?.(
-              msg.from as string,
-              msg.text as string,
-              msg.nickname as string,
-              msg.avatar as string | undefined,
+              msg.from as string, msg.text as string,
+              msg.nickname as string, msg.avatar as string | undefined,
             )
             break
         }
       }
 
-      this.ws.onclose = () => this.handlers.onClose?.()
+      this.ws.onclose = () => {
+        if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
+        this.handlers.onClose?.()
+      }
     })
   }
 
@@ -104,8 +128,13 @@ export class SignalingClient {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
   }
 
-  sendBinary(data: ArrayBuffer) {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data)
+  /** Send binary frame: [1-byte type] + payload */
+  sendBinary(type: 0x01 | 0x02, payload: ArrayBuffer) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return
+    const frame = new Uint8Array(1 + payload.byteLength)
+    frame[0] = type
+    frame.set(new Uint8Array(payload), 1)
+    this.ws.send(frame.buffer)
   }
 
   join(channel: string, nickname: string, avatar?: string) {
@@ -114,6 +143,14 @@ export class SignalingClient {
 
   announce(nickname: string, avatar?: string) {
     this.send({ type: 'announce', nickname, avatar })
+  }
+
+  streamStart(mimeType: string) {
+    this.send({ type: 'stream-start', mimeType })
+  }
+
+  streamStop() {
+    this.send({ type: 'stream-stop' })
   }
 
   sendChat(text: string) {

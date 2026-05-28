@@ -2161,3 +2161,151 @@ html, body, #root {
 
 .cp-bar-leave-btn svg { width: 18px; height: 18px; }
 .cp-bar-leave-btn:hover { background: rgba(242, 63, 67, .15); color: var(--red); }
+
+/* ─── CONTEXT MENU ─────────────────────────────────────────── */
+.cp-context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-2);
+  border: 1px solid var(--bg-4);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 200px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.cp-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background .1s;
+}
+.cp-context-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+.cp-context-item:hover { background: var(--bg-3); }
+.cp-context-section {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-secondary);
+}
+.cp-context-vol-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+.cp-context-vol-row input[type=range] { flex: 1; }
+.cp-context-vol-row span { font-size: 12px; color: var(--text-secondary); min-width: 36px; text-align: right; }
+
+/* ─── FULLSCREEN VIEWER ─────────────────────────────────────── */
+.ss-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+.ss-fullscreen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: rgba(0,0,0,.7);
+  flex-shrink: 0;
+}
+.ss-fullscreen-title { color: #fff; font-size: 14px; font-weight: 600; }
+.ss-fullscreen-close {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 18px;
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background .1s, color .1s;
+}
+.ss-fullscreen-close:hover { background: rgba(255,255,255,.1); color: #fff; }
+.ss-fullscreen-video {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* ─── PREVIEW ───────────────────────────────────────────────── */
+.ss-preview-wrap { cursor: pointer; }
+.ss-preview-video {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.ss-preview-hint { font-size: 11px; opacity: .6; }
+
+/* ─── SCREEN SHARE MODAL TOGGLE ─────────────────────────────── */
+.ss-toggle { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.ss-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+.ss-toggle-track {
+  width: 36px; height: 20px;
+  background: var(--bg-4);
+  border-radius: 10px;
+  transition: background .15s;
+  position: relative;
+}
+.ss-toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 3px; left: 3px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .15s;
+}
+.ss-toggle input:checked + .ss-toggle-track { background: var(--accent); }
+.ss-toggle input:checked + .ss-toggle-track::after { transform: translateX(16px); }
+
+/* ─── SCREEN SHARE MODAL TABS ───────────────────────────────── */
+.ss-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.ss-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 4px;
+  background: none; border: none;
+  color: var(--text-secondary); font-family: var(--font); font-size: 13px;
+  cursor: pointer; transition: background .1s, color .1s;
+}
+.ss-tab svg { width: 16px; height: 16px; }
+.ss-tab:hover { background: var(--bg-3); color: var(--text-primary); }
+.ss-tab.active { background: var(--bg-3); color: var(--text-primary); }
+
+/* ─── SOURCE GRID ───────────────────────────────────────────── */
+.ss-source-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; max-height: 240px; overflow-y: auto; }
+.ss-source-item {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 8px; border-radius: 6px; border: 2px solid transparent;
+  background: var(--bg-3); cursor: pointer; font-family: var(--font);
+  transition: border-color .12s, background .12s;
+}
+.ss-source-item:hover { background: var(--bg-4); }
+.ss-source-item.selected { border-color: var(--accent); }
+.ss-source-thumb { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 3px; background: var(--bg-0); }
+.ss-source-name { font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; text-align: center; }
+
+/* ─── SCREENSHARE MODAL ─────────────────────────────────────── */
+.screenshare-modal { width: 600px; max-height: 85vh; overflow-y: auto; }

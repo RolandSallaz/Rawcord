@@ -26,7 +26,7 @@ const QUALITIES: Quality[] = [
 const FPS_OPTIONS = [10, 30, 60]
 
 interface Props {
-  onStart: (stream: MediaStream, sourceId: string) => void
+  onStart: (stream: MediaStream, sourceId: string, withAudio: boolean) => void
   onClose: () => void
 }
 
@@ -36,6 +36,7 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
   const [tab, setTab] = useState<'screen' | 'window'>('screen')
   const [qualityIdx, setQualityIdx] = useState(1)
   const [fps, setFps] = useState(30)
+  const [withAudio, setWithAudio] = useState(true)
   const [loading, setLoading] = useState(true)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
@@ -72,14 +73,14 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
       // Store the selected source in the main process so setDisplayMediaRequestHandler can use it
       await ipcRenderer.invoke('screen:capture', selectedId)
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        audio: false,
+        audio: withAudio,
         video: {
           width: { ideal: q.width },
           height: { ideal: q.height },
           frameRate: { ideal: fps },
         },
       })
-      onStart(stream, selectedId)
+      onStart(stream, selectedId, withAudio)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка захвата экрана')
       setStarting(false)
@@ -140,6 +141,22 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
                 </button>
               ))}
             </div>
+          )}
+        </div>
+
+        <div className="modal-section">
+          <div className="modal-section-title">ЗВУК</div>
+          <div className="settings-row">
+            <span className="settings-label">Звук компьютера</span>
+            <label className="ss-toggle">
+              <input type="checkbox" checked={withAudio} onChange={e => setWithAudio(e.target.checked)} />
+              <span className="ss-toggle-track" />
+            </label>
+          </div>
+          {withAudio && (
+            <p className="settings-hint" style={{ marginTop: 4 }}>
+              Голоса участников Rawcord будут убраны из трансляции автоматически
+            </p>
           )}
         </div>
 

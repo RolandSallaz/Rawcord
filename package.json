@@ -1,6 +1,6 @@
 {
   "name": "rawcord",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Self-hosted voice chat with SFU media server",
   "main": "out/main/index.js",
   "scripts": {
