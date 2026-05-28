@@ -15,7 +15,7 @@ export interface PeerInfo {
 }
 
 const SAMPLE_RATE = 48000
-const FRAME_SAMPLES = 960   // 20 ms at 48 kHz
+const FRAME_SAMPLES = 1920  // 40 ms at 48 kHz — good balance of latency vs message rate
 const JITTER_BUF_SEC = 0.06 // 60 ms jitter buffer
 
 // Inline AudioWorklet code loaded as blob URL to avoid Vite/worker complications

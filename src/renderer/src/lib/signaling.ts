@@ -23,6 +23,7 @@ export interface SignalingHandlers {
 export class SignalingClient {
   private ws: WebSocket | null = null
   private handlers: Partial<SignalingHandlers> = {}
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(private url: string) {}
 
@@ -37,8 +38,22 @@ export class SignalingClient {
 
       const timer = setTimeout(() => { this.ws?.close(); reject(new Error('Connection timeout')) }, 5000)
 
-      this.ws.onopen = () => { clearTimeout(timer); resolve() }
-      this.ws.onerror = () => { clearTimeout(timer); reject(new Error('Cannot connect to server')) }
+      this.ws.onopen = () => {
+        clearTimeout(timer)
+        // Application-level heartbeat — keeps the connection alive through proxies/NAT
+        this.heartbeatTimer = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'ping' }))
+          }
+        }, 5000)
+        resolve()
+      }
+      this.ws.onerror = () => {
+        clearTimeout(timer)
+        // Trigger onClose so ChannelPage schedules a reconnect
+        this.handlers.onClose?.()
+        reject(new Error('Cannot connect to server'))
+      }
 
       this.ws.onmessage = (e) => {
         if (e.data instanceof ArrayBuffer) {
@@ -106,6 +121,7 @@ export class SignalingClient {
   }
 
   disconnect() {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
     this.send({ type: 'leave' })
     this.ws?.close()
     this.ws = null

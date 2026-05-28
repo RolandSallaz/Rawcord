@@ -121,14 +121,18 @@ export function startServer(port: number): Promise<void> {
 
         // Binary = audio frame, relay immediately
         if (isBinary) {
-          const channel = ws._channel
-          if (!channel) return
-          const room = rooms.get(channel)
-          if (!room) return
-          // Prepend 36-byte sender ID so clients know who is speaking
-          const idBuf = Buffer.from(id.padEnd(36).slice(0, 36), 'ascii')
-          const frame = Buffer.concat([idBuf, raw as Buffer])
-          room.broadcastBinary(frame, id)
+          try {
+            const channel = ws._channel
+            if (!channel) return
+            const room = rooms.get(channel)
+            if (!room) return
+            // raw may be Buffer | Buffer[] depending on fragmentation
+            const payload = Buffer.isBuffer(raw) ? raw : Buffer.concat(raw as Buffer[])
+            const idBuf = Buffer.from(id.padEnd(36).slice(0, 36), 'ascii')
+            room.broadcastBinary(Buffer.concat([idBuf, payload]), id)
+          } catch (e) {
+            console.warn('[signaling] binary relay error:', e)
+          }
           return
         }
 
@@ -171,6 +175,10 @@ export function startServer(port: number): Promise<void> {
               break
             }
 
+            case 'ping':
+              // application-level heartbeat — no response needed
+              break
+
             case 'leave':
               handleLeave(ws)
               break
@@ -192,7 +200,7 @@ export function startServer(port: number): Promise<void> {
         w.isAlive = false
         try { w.ping() } catch {}
       })
-    }, 25000)
+    }, 8000)
 
     wss.on('close', () => clearInterval(pingInterval))
     httpServer.listen(port, () => { clearTimeout(timer); resolve() })
