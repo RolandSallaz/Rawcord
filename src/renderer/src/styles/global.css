@@ -1695,7 +1695,7 @@ html, body, #root {
   from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
-.cp-connected {
+.cp-connected-OLD-UNUSED {
   flex: 1; display: flex; overflow: hidden; position: relative;
 }
 .cp-participants {
@@ -1920,3 +1920,244 @@ html, body, #root {
 .peer-vol-value {
   font-size: 12px; color: var(--text-secondary); width: 38px; text-align: right; flex-shrink: 0;
 }
+
+/* ─── CONNECTED LAYOUT (redesign) ────────────────────────── */
+
+/* cp-connected is now a flex-column: body (3-col) + bottom-bar */
+.cp-connected {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+/* The 3-column row: participants | main | chat */
+.cp-connected-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ─── VOICE ACTIVE (empty state when nothing shared) ────── */
+
+.cp-voice-active {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  user-select: none;
+}
+
+.cp-voice-waves {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 48px;
+}
+
+.cp-wave {
+  width: 5px;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.5;
+  animation: cp-wave-bounce 1.2s ease-in-out infinite;
+}
+
+.cp-wave:nth-child(1) { height: 20px; animation-delay: 0s; }
+.cp-wave:nth-child(2) { height: 36px; animation-delay: 0.2s; }
+.cp-wave:nth-child(3) { height: 20px; animation-delay: 0.4s; }
+
+@keyframes cp-wave-bounce {
+  0%, 100% { transform: scaleY(0.6); opacity: 0.35; }
+  50%       { transform: scaleY(1);   opacity: 0.7;  }
+}
+
+.cp-voice-active-label {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.cp-voice-active-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ─── BOTTOM BAR (Discord-style) ────────────────────────── */
+
+.cp-bottom-bar {
+  height: 52px;
+  flex-shrink: 0;
+  background: var(--bg-0);
+  border-top: 1px solid rgba(255,255,255,0.04);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 4px;
+  z-index: 10;
+}
+
+/* Left section — user info (~220px to align with participants panel) */
+.cp-bar-user {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.cp-bar-avatar-wrap {
+  flex-shrink: 0;
+  border-radius: 50%;
+  transition: box-shadow .15s;
+}
+
+.cp-bar-avatar-wrap.speaking {
+  box-shadow: 0 0 0 2px var(--green);
+}
+
+.cp-bar-user-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.cp-bar-username {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cp-bar-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Center section — voice controls */
+.cp-bar-controls {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.cp-bar-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 52px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font);
+  transition: background .1s, color .1s;
+  flex-shrink: 0;
+}
+
+.cp-bar-btn svg { width: 20px; height: 20px; }
+
+.cp-bar-btn:hover {
+  background: var(--bg-3);
+  color: var(--text-primary);
+}
+
+.cp-bar-btn.active-red {
+  color: var(--red);
+}
+
+.cp-bar-btn.active-red:hover {
+  background: rgba(242, 63, 67, .12);
+  color: var(--red);
+}
+
+.cp-bar-btn.active-green {
+  color: var(--green);
+}
+
+.cp-bar-btn.active-green:hover {
+  background: rgba(35, 165, 90, .12);
+  color: var(--green);
+}
+
+.cp-bar-btn-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: inherit;
+  line-height: 1;
+}
+
+.cp-bar-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--bg-4);
+  flex-shrink: 0;
+  margin: 0 4px;
+}
+
+/* Right section */
+.cp-bar-right {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0 4px;
+  min-width: 0;
+}
+
+.cp-bar-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .1s, color .1s;
+  flex-shrink: 0;
+}
+
+.cp-bar-icon-btn svg { width: 18px; height: 18px; }
+.cp-bar-icon-btn:hover { background: var(--bg-3); color: var(--text-primary); }
+
+.cp-bar-leave-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .12s, color .12s;
+  flex-shrink: 0;
+}
+
+.cp-bar-leave-btn svg { width: 18px; height: 18px; }
+.cp-bar-leave-btn:hover { background: rgba(242, 63, 67, .15); color: var(--red); }

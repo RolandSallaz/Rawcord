@@ -56,11 +56,21 @@ export class PeerManager {
   private speakingPeers = new Set<string>()
   private vadInterval: ReturnType<typeof setInterval> | null = null
 
+  /**
+   * Tracks peers that are being intentionally destroyed (via removePeer/destroyAll).
+   * When a peer closes unexpectedly (NOT in this set), onPeerDisconnected is called.
+   */
+  private intendedRemovals = new Set<string>()
+
   onPeersChanged: (peers: PeerState[]) => void = () => {}
   onRemoteVideo: (peerId: string, track: MediaStreamTrack, streams: readonly MediaStream[]) => void = () => {}
   onRemoteVideoEnded: (peerId: string) => void = () => {}
   onSharingChanged: (sharingPeerIds: Set<string>) => void = () => {}
   onSpeakingChanged: (speaking: Set<string>) => void = () => {}
+  /**
+   * Fired when a WebRTC peer connection drops unexpectedly (not via removePeer).
+   * The caller can use this to attempt peer reconnection via the signaling channel.
+   */
   onPeerDisconnected: (peerId: string) => void = () => {}
 
   constructor(signaling: ISignaling) {
@@ -75,6 +85,8 @@ export class PeerManager {
     try {
       const ctx = new AudioContext()
       this.micAudioCtx = ctx
+      // AudioContext may start suspended due to browser autoplay policy
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {})
       const src = ctx.createMediaStreamSource(stream)
       const gain = ctx.createGain()
       gain.gain.value = this.micVolume / 100
@@ -83,10 +95,6 @@ export class PeerManager {
       src.connect(gain)
       gain.connect(dest)
       this.stream = new MediaStream(dest.stream.getAudioTracks())
-      // Auto-resume if the browser suspends the context (kills mic audio silently)
-      ctx.addEventListener('statechange', () => {
-        if (ctx.state === 'suspended') ctx.resume().catch(() => {})
-      })
     } catch {
       this.stream = stream
     }
@@ -113,36 +121,48 @@ export class PeerManager {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
         ]
       }
     })
+
+    // Attach ICE connection state listener for restart on failure.
+    // Deferred slightly so SimplePeer's own handlers attach first.
+    setTimeout(() => {
+      if (peer.destroyed) return
+      const pc = (peer as unknown as { _pc?: RTCPeerConnection })._pc
+      if (!pc) return
+      pc.addEventListener('iceconnectionstatechange', () => {
+        if (peer.destroyed) return
+        if (pc.iceConnectionState === 'failed') {
+          try { pc.restartIce() } catch { /* browser may not support it */ }
+        }
+      })
+    }, 0)
 
     peer.on('signal', (data) => {
       this.signaling.relay(peerId, data)
     })
 
     peer.on('stream', (remoteStream: MediaStream) => {
-      const existingAudio = this.audioContainer.querySelector<HTMLAudioElement>(`audio[data-peer-id="${peerId}"]`)
-      if (existingAudio) {
-        // Renegotiation delivered a new stream — update the existing element
-        existingAudio.srcObject = remoteStream
-      } else {
+      // Create audio element if not yet done for this peer.
+      // Deliberately NOT filtering by video tracks — WebRTC may deliver a merged
+      // stream containing both voice audio and screen video.
+      if (!this.audioContainer.querySelector(`audio[data-peer-id="${peerId}"]`)) {
         const audio = document.createElement('audio')
         audio.srcObject = remoteStream
         audio.autoplay = true
         audio.dataset.peerId = peerId
-        if (this.outputDeviceId && (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId) {
-          (audio as unknown as { setSinkId: (id: string) => Promise<void> }).setSinkId(this.outputDeviceId).catch(() => {})
+        if (this.outputDeviceId) {
+          const a = audio as unknown as { setSinkId?: (id: string) => Promise<void> }
+          if (a.setSinkId) a.setSinkId(this.outputDeviceId).catch(() => {})
         }
         this.audioContainer.appendChild(audio)
 
         // VAD: route source through a silent gain to force graph processing
-        if (!this.audioCtx) {
-          this.audioCtx = new AudioContext()
-          this.audioCtx.addEventListener('statechange', () => {
-            if (this.audioCtx?.state === 'suspended') this.audioCtx.resume().catch(() => {})
-          })
-        }
+        if (!this.audioCtx) this.audioCtx = new AudioContext()
+        if (this.audioCtx.state === 'suspended') this.audioCtx.resume().catch(() => {})
         const source = this.audioCtx.createMediaStreamSource(remoteStream)
         const analyser = this.audioCtx.createAnalyser()
         analyser.fftSize = 512
@@ -155,7 +175,7 @@ export class PeerManager {
         if (!this.vadInterval) this.startVad()
       }
 
-      // Handle video tracks arriving with this stream (screen share arriving as initial stream)
+      // Handle video tracks arriving with this stream (screen share as initial stream)
       const videoTracks = remoteStream.getVideoTracks()
       if (videoTracks.length > 0) {
         this.sharingPeers.add(peerId)
@@ -183,8 +203,17 @@ export class PeerManager {
       }
     })
 
-    peer.on('close', () => { this.removePeer(peerId); this.onPeerDisconnected(peerId) })
-    peer.on('error', () => { this.removePeer(peerId); this.onPeerDisconnected(peerId) })
+    peer.on('close', () => {
+      const intended = this.intendedRemovals.has(peerId)
+      if (!intended) {
+        // Unexpected disconnect — notify caller so it can attempt reconnection
+        this.onPeerDisconnected(peerId)
+      }
+      this.doCleanup(peerId)
+    })
+
+    // SimplePeer emits 'error' then 'close'; let the 'close' handler do cleanup
+    peer.on('error', () => { /* handled by close */ })
 
     this.peers.set(peerId, peer)
 
@@ -216,8 +245,6 @@ export class PeerManager {
     }
 
     videoTrack.onended = () => this.stopScreenShare()
-
-    // Set video bitrate based on actual track resolution after renegotiation settles
     setTimeout(() => this.applyScreenBitrate(), 1500)
   }
 
@@ -297,13 +324,13 @@ export class PeerManager {
     }, 80)
   }
 
-  removePeer(peerId: string) {
-    const peer = this.peers.get(peerId)
-    if (peer) {
-      if (!peer.destroyed) peer.destroy()
-      this.peers.delete(peerId)
-    }
-
+  /**
+   * Internal cleanup after a peer's WebRTC connection closes.
+   * Called from the peer's 'close' event handler.
+   */
+  private doCleanup(peerId: string) {
+    this.intendedRemovals.delete(peerId)
+    this.peers.delete(peerId)
     this.peerNicknames.delete(peerId)
     this.sharingPeers.delete(peerId)
     this.analysers.delete(peerId)
@@ -320,14 +347,38 @@ export class PeerManager {
     this.notifyChanged()
   }
 
+  /**
+   * Intentionally remove a peer (e.g., they left the room via signaling).
+   * Does NOT fire onPeerDisconnected.
+   */
+  removePeer(peerId: string) {
+    const peer = this.peers.get(peerId)
+    if (peer) {
+      this.intendedRemovals.add(peerId)
+      if (!peer.destroyed) peer.destroy()
+      // doCleanup is triggered by the 'close' event.
+      // Safety fallback in case close never fires:
+      setTimeout(() => {
+        if (this.intendedRemovals.has(peerId)) {
+          this.doCleanup(peerId)
+        }
+      }, 400)
+    } else {
+      this.doCleanup(peerId)
+    }
+  }
+
   destroyAll() {
     this.stopScreenShare()
+    // Mark all as intended BEFORE destroying so close handlers don't fire onPeerDisconnected
+    this.peers.forEach((_, id) => this.intendedRemovals.add(id))
     this.peers.forEach((peer) => { if (!peer.destroyed) peer.destroy() })
     this.peers.clear()
     this.peerNicknames.clear()
     this.sharingPeers.clear()
     this.analysers.clear()
     this.speakingPeers.clear()
+    this.intendedRemovals.clear()
     if (this.vadInterval) { clearInterval(this.vadInterval); this.vadInterval = null }
     this.audioCtx?.close()
     this.audioCtx = null
@@ -335,10 +386,8 @@ export class PeerManager {
     this.micAudioCtx = null
     this.micGainNode = null
     this.audioContainer.innerHTML = ''
-    // Stop the processed stream's virtual tracks (WebAudio destination)
     this.stream?.getTracks().forEach(t => t.stop())
     this.stream = null
-    // Stop the original hardware mic stream
     this.originalStream?.getTracks().forEach(t => t.stop())
     this.originalStream = null
     this.notifyChanged()

@@ -16,7 +16,6 @@ const { ipcRenderer } = (window as any).require('electron')
 
 type AppState = 'idle' | 'browsing' | 'connecting' | 'connected' | 'error' | 'reconnecting'
 
-// Задержки автореконнекта: 3s, 5s, 10s, 20s, 30s
 const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]
 type ConnectionMode = 'steam' | 'server'
 
@@ -53,6 +52,51 @@ function AvatarImg({ src, initial, size = 32 }: { src?: string; initial: string;
     <div className="avatar-initials" style={{ width: size, height: size, fontSize: size * 0.44 }}>
       {initial.toUpperCase()}
     </div>
+  )
+}
+
+// Mic icon — shown when active (not muted)
+function IconMic() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
+    </svg>
+  )
+}
+
+// Mic muted icon
+function IconMicOff() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/>
+    </svg>
+  )
+}
+
+// Headphones (deafen) icon
+function IconHeadphones() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+    </svg>
+  )
+}
+
+// Headphones off (deafened) icon
+function IconHeadphonesOff() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+    </svg>
+  )
+}
+
+// Screen share icon
+function IconScreen() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
+    </svg>
   )
 }
 
@@ -104,7 +148,7 @@ export default function ChannelPage() {
   const prevMicMutedRef = useRef(false)
   const localVadRef = useRef<{ ctx: AudioContext; interval: ReturnType<typeof setInterval> } | null>(null)
 
-  // Автореконнект
+  // Auto-reconnect state
   const intentionalDisconnectRef = useRef(false)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
@@ -116,7 +160,6 @@ export default function ChannelPage() {
   } | null>(null)
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
-
   useEffect(() => { return () => { cleanup() } }, [])
 
   useEffect(() => {
@@ -125,7 +168,6 @@ export default function ChannelPage() {
     }
   }, [remoteVideoStreams, watchingPeerId])
 
-  // Live-update mic gain when slider moves (no reconnect needed)
   useEffect(() => {
     peerManagerRef.current?.setMicGain(settings.micVolume)
   }, [settings.micVolume])
@@ -150,11 +192,8 @@ export default function ChannelPage() {
     }
   }, [settings.voiceMode, settings.pttKey, appState])
 
-  // Steam Rich Presence join (friend clicks "Join Game")
   useEffect(() => {
-    const handler = (_e: unknown, lobbyId: string) => {
-      handleJoinLobby(lobbyId)
-    }
+    const handler = (_e: unknown, lobbyId: string) => { handleJoinLobby(lobbyId) }
     ipcRenderer.on('steam:join-requested', handler)
     return () => ipcRenderer.removeListener('steam:join-requested', handler)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -186,7 +225,7 @@ export default function ChannelPage() {
     const attempt = reconnectAttemptRef.current
     if (attempt >= RECONNECT_DELAYS.length) {
       setAppState('error')
-      setErrorMsg('Не удалось восстановить соединение после нескольких попыток')
+      setErrorMsg('Не удалось восстановить соединение')
       reconnectAttemptRef.current = 0
       return
     }
@@ -272,7 +311,11 @@ export default function ChannelPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, profile])
 
-  const connectToChannel = useCallback(async (lobbyId: string | null, owner: boolean, factory: (lobbyId: string | null) => ISignalingClient) => {
+  const connectToChannel = useCallback(async (
+    lobbyId: string | null,
+    owner: boolean,
+    factory: (lobbyId: string | null) => ISignalingClient
+  ) => {
     let stream: MediaStream
     try {
       const audioConstraints: MediaTrackConstraints = {
@@ -291,6 +334,7 @@ export default function ChannelPage() {
     // Local VAD
     try {
       const ctx = new AudioContext()
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {})
       const src = ctx.createMediaStreamSource(stream)
       const analyser = ctx.createAnalyser()
       analyser.fftSize = 512
@@ -312,7 +356,7 @@ export default function ChannelPage() {
     peerManager.setOutputDevice(settings.outputDeviceId)
 
     const peerInfo = new Map<string, PeerInfo>()
-    const peerRole = new Map<string, boolean>() // true = this side was initiator
+    const peerRole = new Map<string, boolean>()
 
     peerManager.onPeersChanged = () => {
       setPeers(prev =>
@@ -346,6 +390,20 @@ export default function ChannelPage() {
     peerManager.onRemoteVideoEnded = (peerId) => {
       setRemoteVideoStreams(prev => { const m = new Map(prev); m.delete(peerId); return m })
       setRemoteSharingPeers(prev => { const m = new Set(prev); m.delete(peerId); return m })
+    }
+
+    // Peer-level reconnect: when a WebRTC connection drops but signaling is still up,
+    // recreate the peer after a short delay (one side acts as initiator sooner).
+    peerManager.onPeerDisconnected = (peerId) => {
+      const info = peerInfo.get(peerId)
+      if (!info) return
+      const wasInitiator = peerRole.get(peerId) ?? false
+      const delay = wasInitiator ? 1500 : 3000
+      setTimeout(() => {
+        if (peerManagerRef.current !== peerManager) return
+        if (peerManager.getPeerIds().includes(peerId)) return
+        peerManager.createPeer(peerId, info.nickname, wasInitiator)
+      }, delay)
     }
 
     signaling.on('onPeers', (existingPeers: PeerInfo[]) => {
@@ -385,25 +443,10 @@ export default function ChannelPage() {
     signaling.on('onChat', (from: string, text: string, nickname: string, avatar?: string) => {
       setChatMessages(prev => [...prev, {
         id: `${from}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        from,
-        text,
-        nickname,
-        avatar,
+        from, text, nickname, avatar,
         timestamp: Date.now(),
       }])
     })
-    peerManager.onPeerDisconnected = (peerId) => {
-      const info = peerInfo.get(peerId)
-      if (!info) return
-      const wasInitiator = peerRole.get(peerId) ?? false
-      // Initiator reconnects sooner; non-initiator waits in case initiator arrives first
-      const delay = wasInitiator ? 1500 : 3000
-      setTimeout(() => {
-        if (peerManagerRef.current !== peerManager) return // already cleaned up
-        if (peerManager.getPeerIds().includes(peerId)) return // already reconnected
-        peerManager.createPeer(peerId, info.nickname, wasInitiator)
-      }, delay)
-    }
 
     signaling.on('onClose', () => {
       cleanup()
@@ -415,7 +458,6 @@ export default function ChannelPage() {
         setCurrentLobbyId(null)
         setServerUrl('')
       } else {
-        // Неожиданный разрыв — пробуем переподключиться
         scheduleReconnect()
       }
     })
@@ -425,8 +467,7 @@ export default function ChannelPage() {
     } catch {
       stream.getTracks().forEach(t => t.stop())
       cleanup()
-      const errMsg = mode === 'steam' ? 'Не удалось подключиться к лобби Steam' : 'Не удалось подключиться к серверу'
-      setErrorMsg(errMsg)
+      setErrorMsg(mode === 'steam' ? 'Не удалось подключиться к лобби Steam' : 'Не удалось подключиться к серверу')
       setAppState('error')
       return
     }
@@ -549,8 +590,7 @@ export default function ChannelPage() {
     signalingRef.current?.sendChat(text)
     setChatMessages(prev => [...prev, {
       id: `self-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      from: 'self',
-      text,
+      from: 'self', text,
       nickname: profile.nickname,
       avatar: profile.avatar || undefined,
       timestamp: Date.now(),
@@ -595,7 +635,7 @@ export default function ChannelPage() {
         />
       )}
 
-      {/* Popup персональной громкости (ПКМ на участника) */}
+      {/* Per-user volume popup (right-click on participant) */}
       {peerVolPopup && (() => {
         const vol = peerVolumes.get(peerVolPopup.peer.id) ?? 100
         const rect = peerVolPopup.anchor
@@ -652,31 +692,24 @@ export default function ChannelPage() {
             <h1 className="cp-home-title">Rawcord</h1>
             <p className="cp-home-sub">P2P голосовой чат</p>
 
-            {/* Mode toggle */}
             <div className="cp-mode-toggle">
-              <button
-                className={`cp-mode-btn${mode === 'steam' ? ' active' : ''}`}
-                onClick={() => setMode('steam')}
-              >Через Steam</button>
-              <button
-                className={`cp-mode-btn${mode === 'server' ? ' active' : ''}`}
-                onClick={() => setMode('server')}
-              >Выделенный сервер</button>
+              <button className={`cp-mode-btn${mode === 'steam' ? ' active' : ''}`} onClick={() => setMode('steam')}>
+                Через Steam
+              </button>
+              <button className={`cp-mode-btn${mode === 'server' ? ' active' : ''}`} onClick={() => setMode('server')}>
+                Выделенный сервер
+              </button>
             </div>
 
             {mode === 'steam' ? (
               <div className="cp-home-actions">
                 <button className="cp-action-card" onClick={handleCreateLobby}>
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-                  </svg>
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
                   <span className="cp-action-label">Создать лобби</span>
                   <span className="cp-action-desc">Друзья подключатся к тебе</span>
                 </button>
                 <button className="cp-action-card" onClick={() => { setAppState('browsing'); fetchLobbies() }}>
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-                  </svg>
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
                   <span className="cp-action-label">Найти лобби</span>
                   <span className="cp-action-desc">Войти к другу</span>
                 </button>
@@ -684,19 +717,14 @@ export default function ChannelPage() {
             ) : (
               <div className="cp-home-actions">
                 <div className="cp-action-card create-server-card">
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
-                  </svg>
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/></svg>
                   <span className="cp-action-label">Создать сервер</span>
-                  <span className="cp-action-desc">Запустить сервер и ждать подключений</span>
+                  <span className="cp-action-desc">Запустить и ждать подключений</span>
                   <div className="connect-input-row">
                     <span className="port-label">Порт:</span>
                     <input
                       className="server-url-input port-input"
-                      type="number"
-                      min="1024"
-                      max="65535"
-                      placeholder="3001"
+                      type="number" min="1024" max="65535" placeholder="3001"
                       value={serverPort}
                       onChange={e => setServerPort(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') handleStartServer() }}
@@ -705,16 +733,13 @@ export default function ChannelPage() {
                   </div>
                 </div>
                 <div className="cp-action-card connect-card">
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
-                  </svg>
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
                   <span className="cp-action-label">Подключиться</span>
                   <span className="cp-action-desc">Ввести IP:Порт сервера</span>
                   <div className="connect-input-row">
                     <input
                       className="server-url-input"
-                      type="text"
-                      placeholder="192.168.1.100:3001"
+                      type="text" placeholder="192.168.1.100:3001"
                       value={serverInput}
                       onChange={e => setServerInput(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') handleConnectToServer() }}
@@ -725,7 +750,6 @@ export default function ChannelPage() {
                       onClick={() => handleConnectToServer()}
                     >Подкл.</button>
                   </div>
-
                   {recentServers.length > 0 && (
                     <div className="cp-recent-servers">
                       <div className="cp-recent-label">Недавние</div>
@@ -753,9 +777,7 @@ export default function ChannelPage() {
             )}
           </div>
           <button className="cp-settings-btn" onClick={() => setSettingsOpen(true)}>
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
-            </svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
           </button>
           <div className="cp-user-badge">
             <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={28} />
@@ -791,9 +813,7 @@ export default function ChannelPage() {
                   className="connect-btn"
                   style={{ marginTop: 0, padding: '6px 20px', fontSize: 13 }}
                   onClick={() => handleJoinLobby(entry.lobbyId)}
-                >
-                  Войти
-                </button>
+                >Войти</button>
               </div>
             ))}
           </div>
@@ -856,168 +876,216 @@ export default function ChannelPage() {
           {streamNotification && (
             <div className="ss-notification">{streamNotification}</div>
           )}
-          {/* Participants */}
-          <div className="cp-participants">
-            <div className="cp-participants-label">В ГОЛОСОВОМ</div>
 
-            {/* Self */}
-            <div className={`cp-participant self${isSpeaking && !micMuted ? ' speaking' : ''}`}>
-              <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={36} />
-              <span className="cp-participant-name">{profile.nickname}</span>
-              <div className="cp-participant-icons">
-                {isSharing && (
-                  <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
-                  </svg>
-                )}
-                {micMuted
-                  ? <svg className="vm-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
-                  : <span className={`vm-speaking${isSpeaking ? ' active' : ''}`} />
-                }
-              </div>
-            </div>
+          {/* Three-column body */}
+          <div className="cp-connected-body">
 
-            {/* Peers */}
-            {peers.map(peer => (
-              <div
-                key={peer.id}
-                className={`cp-participant clickable${speakingPeers.has(peer.id) ? ' speaking' : ''}`}
-                onClick={(e) => setProfileCard({ peer, anchor: e.currentTarget.getBoundingClientRect() })}
-                onContextMenu={(e) => { e.preventDefault(); setPeerVolPopup({ peer, anchor: e.currentTarget.getBoundingClientRect() }) }}
-              >
-                <AvatarImg src={peer.avatar} initial={peer.nickname[0] ?? '?'} size={36} />
-                <span className="cp-participant-name">{peer.nickname}</span>
+            {/* Left: participants */}
+            <div className="cp-participants">
+              <div className="cp-participants-label">В голосовом · {peers.length + 1}</div>
+
+              {/* Self */}
+              <div className={`cp-participant self${isSpeaking && !micMuted ? ' speaking' : ''}`}>
+                <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={34} />
+                <span className="cp-participant-name">{profile.nickname}</span>
                 <div className="cp-participant-icons">
-                  {remoteSharingPeers.has(peer.id)
-                    ? <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/></svg>
-                    : <span className={`vm-speaking${speakingPeers.has(peer.id) ? ' active' : ''}`} />
+                  {isSharing && (
+                    <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/>
+                    </svg>
+                  )}
+                  {micMuted
+                    ? <svg className="vm-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
+                    : <span className={`vm-speaking${isSpeaking ? ' active' : ''}`} />
                   }
                 </div>
               </div>
-            ))}
-          </div>
 
-          {/* Center: screen share previews + controls */}
-          <div className="cp-main">
-            {(isSharing || remoteVideoStreams.size > 0) && (
-              <div className="cp-previews">
-                {isSharing && (
-                  <div className="ss-preview-wrap">
-                    <video ref={localVideoRef} className="ss-preview-video" autoPlay muted playsInline />
-                    <div className="ss-preview-label">Вы транслируете экран</div>
+              {/* Peers */}
+              {peers.map(peer => (
+                <div
+                  key={peer.id}
+                  className={`cp-participant clickable${speakingPeers.has(peer.id) ? ' speaking' : ''}`}
+                  onClick={(e) => setProfileCard({ peer, anchor: e.currentTarget.getBoundingClientRect() })}
+                  onContextMenu={(e) => { e.preventDefault(); setPeerVolPopup({ peer, anchor: e.currentTarget.getBoundingClientRect() }) }}
+                >
+                  <AvatarImg src={peer.avatar} initial={peer.nickname[0] ?? '?'} size={34} />
+                  <span className="cp-participant-name">{peer.nickname}</span>
+                  <div className="cp-participant-icons">
+                    {remoteSharingPeers.has(peer.id)
+                      ? <svg className="vm-sharing-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/></svg>
+                      : <span className={`vm-speaking${speakingPeers.has(peer.id) ? ' active' : ''}`} />
+                    }
                   </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Center: screen share previews or voice idle state */}
+            <div className="cp-main">
+              {(isSharing || remoteVideoStreams.size > 0) ? (
+                <div className="cp-previews">
+                  {isSharing && (
+                    <div className="ss-preview-wrap">
+                      <video ref={localVideoRef} className="ss-preview-video" autoPlay muted playsInline />
+                      <div className="ss-preview-label">Вы транслируете экран</div>
+                    </div>
+                  )}
+                  {[...remoteVideoStreams.entries()].map(([peerId, stream]) => (
+                    <div key={peerId} className="ss-preview-wrap">
+                      <video
+                        className="ss-preview-video" autoPlay playsInline
+                        ref={(el) => { if (el && el.srcObject !== stream) el.srcObject = stream }}
+                      />
+                      <div className="ss-preview-label">
+                        {peers.find(p => p.id === peerId)?.nickname ?? peerId.slice(0, 8)} транслирует
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="cp-voice-active">
+                  <div className="cp-voice-waves">
+                    <div className="cp-wave" />
+                    <div className="cp-wave" />
+                    <div className="cp-wave" />
+                  </div>
+                  <p className="cp-voice-active-label">Голосовой чат активен</p>
+                  <p className="cp-voice-active-sub">
+                    {peers.length === 0
+                      ? 'Ожидание участников…'
+                      : `${peers.length + 1} участн. в канале`
+                    }
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Right: chat */}
+            <div className="cp-chat">
+              <div className="cp-chat-header">Чат</div>
+              <div className="cp-chat-messages">
+                {chatMessages.length === 0 && (
+                  <div className="cp-chat-empty">Пока нет сообщений</div>
                 )}
-                {[...remoteVideoStreams.entries()].map(([peerId, stream]) => (
-                  <div key={peerId} className="ss-preview-wrap">
-                    <video
-                      className="ss-preview-video" autoPlay playsInline
-                      ref={(el) => { if (el && el.srcObject !== stream) el.srcObject = stream }}
-                    />
-                    <div className="ss-preview-label">
-                      {peers.find(p => p.id === peerId)?.nickname ?? peerId.slice(0, 8)} транслирует
+                {chatMessages.map(msg => (
+                  <div key={msg.id} className={`cp-chat-msg${msg.from === 'self' ? ' self' : ''}`}>
+                    <AvatarImg src={msg.avatar} initial={msg.nickname[0] ?? '?'} size={24} />
+                    <div className="cp-chat-msg-body">
+                      <span className="cp-chat-msg-author">{msg.nickname}</span>
+                      <span className="cp-chat-msg-text">{msg.text}</span>
                     </div>
                   </div>
                 ))}
+                <div ref={chatEndRef} />
               </div>
-            )}
+              <div className="cp-chat-input-bar">
+                <input
+                  ref={chatInputRef}
+                  className="cp-chat-input"
+                  type="text"
+                  placeholder="Написать сообщение…"
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleSendChat() }}
+                />
+                <button className="cp-chat-send" onClick={handleSendChat} disabled={!chatInput.trim()}>
+                  <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
 
-            {/* Controls */}
-            <div className="cp-controls">
+          {/* ── Discord-style bottom bar ── */}
+          <div className="cp-bottom-bar">
+
+            {/* Left: user info */}
+            <div className="cp-bar-user">
+              <div className={`cp-bar-avatar-wrap${isSpeaking && !micMuted ? ' speaking' : ''}`}>
+                <AvatarImg src={profile.avatar || undefined} initial={profile.nickname[0]} size={32} />
+              </div>
+              <div className="cp-bar-user-info">
+                <span className="cp-bar-username">{profile.nickname}</span>
+                <span className="cp-bar-status">
+                  {deafened ? 'Заглушён' : micMuted ? 'Микрофон выкл.' : isSpeaking ? 'Говорит…' : 'В канале'}
+                </span>
+              </div>
+            </div>
+
+            {/* Center: voice controls */}
+            <div className="cp-bar-controls">
               <button
-                className={`uc-btn${micMuted ? ' active' : ''}`}
+                className={`cp-bar-btn${micMuted ? ' active-red' : ''}`}
                 title={micMuted ? 'Включить микрофон' : 'Выключить микрофон'}
                 onClick={toggleMic}
               >
-                {micMuted
-                  ? <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
-                  : <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
-                }
+                {micMuted ? <IconMicOff /> : <IconMic />}
+                <span className="cp-bar-btn-label">{micMuted ? 'Вкл. mic' : 'Выкл. mic'}</span>
               </button>
 
               <button
-                className={`uc-btn${deafened ? ' active' : ''}`}
-                title={deafened ? 'Включить звук' : 'Выключить звук'}
+                className={`cp-bar-btn${deafened ? ' active-red' : ''}`}
+                title={deafened ? 'Включить звук' : 'Заглушить всех'}
                 onClick={toggleDeafen}
               >
-                {deafened
-                  ? <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
-                  : <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-                }
+                {deafened ? <IconHeadphonesOff /> : <IconHeadphones />}
+                <span className="cp-bar-btn-label">{deafened ? 'Вкл. звук' : 'Заглушить'}</span>
               </button>
 
+              <div className="cp-bar-divider" />
+
               {!isSharing
-                ? <button className="uc-btn" title="Трансляция экрана" onClick={() => setScreenShareOpen(true)}>
-                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/></svg>
+                ? <button className="cp-bar-btn" title="Трансляция экрана" onClick={() => setScreenShareOpen(true)}>
+                    <IconScreen />
+                    <span className="cp-bar-btn-label">Экран</span>
                   </button>
-                : <button className="uc-btn active" title="Остановить трансляцию" onClick={handleStopScreenShare}>
-                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h3l-1 1v2h12v-2l-1-1h3c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 13H4V5h16v11z"/></svg>
+                : <button className="cp-bar-btn active-green" title="Остановить трансляцию" onClick={handleStopScreenShare}>
+                    <IconScreen />
+                    <span className="cp-bar-btn-label">Стоп</span>
                   </button>
               }
 
-              {isOwner && (
-                <button className="uc-btn" title="Пригласить друзей" onClick={() => ipcRenderer.invoke('steam:inviteFriends')}>
+              {mode === 'steam' && isOwner && (
+                <button
+                  className="cp-bar-btn"
+                  title="Пригласить друзей"
+                  onClick={() => ipcRenderer.invoke('steam:inviteFriends')}
+                >
                   <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                  <span className="cp-bar-btn-label">Позвать</span>
                 </button>
               )}
+            </div>
 
-              <button className="uc-btn settings-btn" title="Настройки" onClick={() => setSettingsOpen(true)}>
-                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
-              </button>
-
+            {/* Right: server info + settings + disconnect */}
+            <div className="cp-bar-right">
               {serverUrl && isOwner && (
                 <button
                   className={`cp-copy-url-btn${copiedUrl ? ' copied' : ''}`}
-                  title="Скопировать адрес сервера"
+                  title="Скопировать адрес"
                   onClick={copyServerUrl}
                 >
                   {copiedUrl
                     ? <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                     : <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
                   }
-                  <span className="cp-copy-url-label">{copiedUrl ? 'Скопировано!' : serverUrl}</span>
+                  <span className="cp-copy-url-label">{copiedUrl ? 'Скопировано!' : serverUrl.replace('ws://', '')}</span>
                 </button>
               )}
               {serverUrl && !isOwner && (
-                <span className="cp-server-info" title="Адрес сервера">{serverUrl}</span>
+                <span className="cp-server-info" title={serverUrl}>{serverUrl.replace('ws://', '')}</span>
               )}
-              <button className="disconnect-btn" onClick={handleDisconnect}>
-                Отключиться
-              </button>
-            </div>
-          </div>
 
-          {/* Chat sidebar */}
-          <div className="cp-chat">
-            <div className="cp-chat-header">Текстовый чат</div>
-            <div className="cp-chat-messages">
-              {chatMessages.length === 0 && (
-                <div className="cp-chat-empty">Пока нет сообщений</div>
-              )}
-              {chatMessages.map(msg => (
-                <div key={msg.id} className={`cp-chat-msg${msg.from === 'self' ? ' self' : ''}`}>
-                  <AvatarImg src={msg.avatar} initial={msg.nickname[0] ?? '?'} size={24} />
-                  <div className="cp-chat-msg-body">
-                    <span className="cp-chat-msg-author">{msg.nickname}</span>
-                    <span className="cp-chat-msg-text">{msg.text}</span>
-                  </div>
-                </div>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-            <div className="cp-chat-input-bar">
-              <input
-                ref={chatInputRef}
-                className="cp-chat-input"
-                type="text"
-                placeholder="Написать сообщение…"
-                value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleSendChat() }}
-              />
-              <button className="cp-chat-send" onClick={handleSendChat} disabled={!chatInput.trim()}>
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-                </svg>
+              <button
+                className="cp-bar-icon-btn"
+                title="Настройки"
+                onClick={() => setSettingsOpen(true)}
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+              </button>
+
+              <button className="cp-bar-leave-btn" title="Отключиться" onClick={handleDisconnect}>
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
               </button>
             </div>
           </div>
