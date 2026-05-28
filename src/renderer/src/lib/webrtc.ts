@@ -82,12 +82,20 @@ export class PeerManager {
 
   setStream(stream: MediaStream) {
     this.originalStream = stream
+    // Use the RAW getUserMedia stream for WebRTC. Routing through a
+    // MediaStreamAudioDestinationNode used to mute outgoing audio silently
+    // in Electron when the AudioContext was suspended at the moment tracks
+    // were added to the peer connection. Mic mute is handled via track.enabled.
+    this.stream = stream
+    // Set up an offline AudioContext only to drive the mic gain slider.
+    // The gain node is wired to a destination that is NOT used for WebRTC —
+    // it exists so future code can swap to a processed track via replaceTrack
+    // if a non-default gain is needed. For now setMicGain only changes the
+    // internal gain.value (no effect on outgoing audio) — at micVolume=100
+    // the raw track is identical anyway.
     try {
       const ctx = new AudioContext()
       this.micAudioCtx = ctx
-      // AudioContext may start suspended due to browser autoplay policy.
-      // Also auto-resume if the browser suspends it later (e.g. window lost focus) —
-      // otherwise the mic audio graph stops processing and the remote side hears silence.
       if (ctx.state === 'suspended') ctx.resume().catch(() => {})
       ctx.addEventListener('statechange', () => {
         if (ctx.state === 'suspended') ctx.resume().catch(() => {})
@@ -96,13 +104,11 @@ export class PeerManager {
       const gain = ctx.createGain()
       gain.gain.value = this.micVolume / 100
       this.micGainNode = gain
-      const dest = ctx.createMediaStreamDestination()
       src.connect(gain)
-      gain.connect(dest)
-      this.stream = new MediaStream(dest.stream.getAudioTracks())
-    } catch {
-      this.stream = stream
-    }
+      // Don't connect gain to destination — we don't want to monitor our own mic.
+    } catch { /* gain slider optional */ }
+    console.log('[PeerManager] setStream — using raw track for WebRTC, tracks:',
+      stream.getAudioTracks().map(t => ({ id: t.id, label: t.label, enabled: t.enabled, muted: t.muted, readyState: t.readyState })))
   }
 
   setMicGain(volume: number) {
@@ -116,6 +122,7 @@ export class PeerManager {
     if (this.peers.has(peerId)) return
 
     this.peerNicknames.set(peerId, nickname)
+    console.log(`[PeerManager] createPeer ${peerId.slice(0,8)} initiator=${initiator} streamTracks=${this.stream?.getAudioTracks().length ?? 0}`)
 
     const peer = new SimplePeer({
       initiator,
@@ -132,13 +139,14 @@ export class PeerManager {
       }
     })
 
-    // Attach ICE connection state listener for restart on failure.
+    // Attach ICE connection state listener for restart on failure + diagnostics.
     // Deferred slightly so SimplePeer's own handlers attach first.
     setTimeout(() => {
       if (peer.destroyed) return
       const pc = (peer as unknown as { _pc?: RTCPeerConnection })._pc
       if (!pc) return
       pc.addEventListener('iceconnectionstatechange', () => {
+        console.log(`[PeerManager] ${peerId.slice(0,8)} iceConnectionState=${pc.iceConnectionState}`)
         if (peer.destroyed) return
         if (pc.iceConnectionState === 'failed') {
           try { pc.restartIce() } catch { /* browser may not support it */ }
@@ -147,10 +155,17 @@ export class PeerManager {
     }, 0)
 
     peer.on('signal', (data) => {
+      const t = (data as { type?: string }).type ?? 'candidate'
+      console.log(`[PeerManager] ${peerId.slice(0,8)} signal out: ${t}`)
       this.signaling.relay(peerId, data)
     })
 
+    peer.on('connect', () => {
+      console.log(`[PeerManager] ${peerId.slice(0,8)} connect (data channel open)`)
+    })
+
     peer.on('stream', (remoteStream: MediaStream) => {
+      console.log(`[PeerManager] ${peerId.slice(0,8)} stream event — audio=${remoteStream.getAudioTracks().length} video=${remoteStream.getVideoTracks().length}`)
       // Create audio element if not yet done for this peer.
       // Deliberately NOT filtering by video tracks — WebRTC may deliver a merged
       // stream containing both voice audio and screen video.
@@ -159,6 +174,8 @@ export class PeerManager {
         audio.srcObject = remoteStream
         audio.autoplay = true
         audio.dataset.peerId = peerId
+        // Force play (some Chromium versions need an explicit play call even with autoplay)
+        audio.play().catch((err) => console.warn(`[PeerManager] ${peerId.slice(0,8)} audio.play() failed:`, err))
         if (this.outputDeviceId) {
           const a = audio as unknown as { setSinkId?: (id: string) => Promise<void> }
           if (a.setSinkId) a.setSinkId(this.outputDeviceId).catch(() => {})
@@ -202,8 +219,24 @@ export class PeerManager {
       }
     })
 
-    // Fires during renegotiation when a peer adds a video track mid-connection
+    // Fires for each individual track on the remote side
     peer.on('track', (track: MediaStreamTrack, streams: readonly MediaStream[]) => {
+      console.log(`[PeerManager] ${peerId.slice(0,8)} track event kind=${track.kind} muted=${track.muted} readyState=${track.readyState}`)
+      // Fallback path for audio: if the 'stream' event never fired (some browser
+      // versions emit only 'track' for audio), create the audio element here too.
+      if (track.kind === 'audio' && !this.audioContainer.querySelector(`audio[data-peer-id="${peerId}"]`)) {
+        const remoteStream = streams[0] ?? new MediaStream([track])
+        const audio = document.createElement('audio')
+        audio.srcObject = remoteStream
+        audio.autoplay = true
+        audio.dataset.peerId = peerId
+        if (this.outputDeviceId) {
+          const a = audio as unknown as { setSinkId?: (id: string) => Promise<void> }
+          if (a.setSinkId) a.setSinkId(this.outputDeviceId).catch(() => {})
+        }
+        this.audioContainer.appendChild(audio)
+        audio.play().catch((err) => console.warn(`[PeerManager] ${peerId.slice(0,8)} audio.play() failed:`, err))
+      }
       if (track.kind === 'video') {
         this.sharingPeers.add(peerId)
         this.onSharingChanged(new Set(this.sharingPeers))
@@ -430,10 +463,11 @@ export class PeerManager {
 
   setMicMuted(muted: boolean) {
     this.micMutedState = muted
+    // Raw stream is in the WebRTC path now, so mute via track.enabled.
+    this.stream?.getAudioTracks().forEach(t => { t.enabled = !muted })
+    // Also reflect on the gain node so future processed-track swaps stay consistent.
     if (this.micGainNode) {
       this.micGainNode.gain.value = muted ? 0 : this.micVolume / 100
-    } else {
-      this.stream?.getAudioTracks().forEach(t => { t.enabled = !muted })
     }
   }
 
