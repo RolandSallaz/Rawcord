@@ -1,6 +1,6 @@
 {
   "name": "rawcord",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Self-hosted voice chat with SFU media server",
   "main": "out/main/index.js",
   "scripts": {
@@ -9,6 +9,7 @@
     "preview": "electron-vite preview",
     "package": "npm run build && electron-builder",
     "release": "npm run build && electron-builder --publish always",
+    "postinstall": "node scripts/fix-binary-data.cjs",
     "test": "jest --config jest.config.js",
     "test:unit": "jest --config jest.config.js --testPathPattern=unit",
     "test:e2e": "jest --config jest.config.js --testPathPattern=e2e"
@@ -21,7 +22,9 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/@shinyoshiaki/binary-data/src/node_modules/**",
+      "node_modules/@shinyoshiaki/binary-data/node_modules/**"
     ],
     "win": {
       "target": [
