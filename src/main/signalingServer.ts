@@ -1,43 +1,88 @@
 /**
- * WebSocket signaling-сервер. Раньше это был чистый relay для P2P; теперь
- * сидит между WS-клиентами и встроенным SFU (см. sfu.ts).
+ * Pure WebSocket relay server — no WebRTC/SFU.
  *
- * Протокол сообщений:
+ * Text frames (JSON):
+ *   C→S: join | announce | chat | leave
+ *   S→C: welcome | participant-joined | participant-left | participant-updated | chat
  *
- * Client → Server:
- *   { type: 'join', channel, nickname, avatar? }
- *   { type: 'offer', sdp }
- *   { type: 'answer', sdp }
- *   { type: 'ice-candidate', candidate }
- *   { type: 'stop-produce', kind: 'video' }
- *   { type: 'announce', nickname, avatar? }
- *   { type: 'chat', text }
- *   { type: 'leave' }
- *
- * Server → Client:
- *   { type: 'welcome', id, iceServers, participants }
- *   { type: 'offer', sdp }
- *   { type: 'answer', sdp }
- *   { type: 'ice-candidate', candidate }
- *   { type: 'participant-joined', participant }
- *   { type: 'participant-left', id }
- *   { type: 'participant-updated', participant }
- *   { type: 'participant-sharing', id, isSharing }
- *   { type: 'chat', from, text, nickname, avatar? }
+ * Binary frames:
+ *   C→S: raw PCM Int16 audio (960 samples, 48 kHz mono = 20 ms)
+ *   S→C: [36-byte ASCII sender UUID] + same PCM data
  */
 import { WebSocketServer, WebSocket } from 'ws'
 import { randomUUID } from 'crypto'
 import { createServer, Server as HttpServer } from 'http'
-import { SFU, getClientIceServers } from './sfu'
 
+export interface ParticipantInfo {
+  id: string
+  nickname: string
+  avatar?: string
+}
+
+interface RoomClient extends ParticipantInfo {
+  ws: WebSocket
+  isAlive: boolean
+}
+
+class Room {
+  private clients = new Map<string, RoomClient>()
+
+  add(id: string, ws: WebSocket, info: ParticipantInfo) {
+    this.clients.set(id, { ...info, ws, isAlive: true })
+    // Notify existing members
+    this.broadcast({ type: 'participant-joined', participant: info }, id)
+  }
+
+  remove(id: string): ParticipantInfo | undefined {
+    const c = this.clients.get(id)
+    this.clients.delete(id)
+    if (c) this.broadcast({ type: 'participant-left', id })
+    return c
+  }
+
+  update(id: string, info: Partial<ParticipantInfo>) {
+    const c = this.clients.get(id)
+    if (!c) return
+    Object.assign(c, info)
+    this.broadcast({ type: 'participant-updated', participant: { ...c, ws: undefined } }, id)
+  }
+
+  list(): ParticipantInfo[] {
+    return [...this.clients.values()].map(({ id, nickname, avatar }) => ({ id, nickname, avatar }))
+  }
+
+  get(id: string) { return this.clients.get(id) }
+
+  broadcast(msg: object, excludeId?: string) {
+    const data = JSON.stringify(msg)
+    for (const [id, c] of this.clients) {
+      if (id === excludeId) continue
+      try { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(data) } catch {}
+    }
+  }
+
+  broadcastBinary(buf: Buffer, excludeId: string) {
+    for (const [id, c] of this.clients) {
+      if (id === excludeId) continue
+      try { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(buf, { binary: true }) } catch {}
+    }
+  }
+
+  get size() { return this.clients.size }
+}
+
+const rooms = new Map<string, Room>()
 let wss: WebSocketServer | null = null
 let httpServer: HttpServer | null = null
-let sfu: SFU | null = null
+
+function getOrCreateRoom(channel: string): Room {
+  let room = rooms.get(channel)
+  if (!room) { room = new Room(); rooms.set(channel, room) }
+  return room
+}
 
 function safeSend(ws: WebSocket, msg: object) {
-  try {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
-  } catch { /* socket dead */ }
+  try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)) } catch {}
 }
 
 interface TaggedWS extends WebSocket {
@@ -48,14 +93,13 @@ interface TaggedWS extends WebSocket {
   isAlive?: boolean
 }
 
-async function handleLeave(ws: TaggedWS): Promise<void> {
-  const channel = ws._channel
-  const id = ws._peerId
-  if (!channel || !id || !sfu) return
-  const room = sfu.getRoom(channel)
+function handleLeave(ws: TaggedWS) {
+  const { _channel, _peerId } = ws
+  if (!_channel || !_peerId) return
+  const room = rooms.get(_channel)
   if (!room) return
-  await room.remove(id)
-  sfu.removeIfEmpty(channel)
+  room.remove(_peerId)
+  if (room.size === 0) rooms.delete(_channel)
   ws._channel = undefined
 }
 
@@ -63,78 +107,47 @@ export function startServer(port: number): Promise<void> {
   return new Promise((resolve, reject) => {
     if (wss) return resolve()
 
-    sfu = new SFU()
-
     const timer = setTimeout(() => reject(new Error('Server start timeout')), 3000)
-
     httpServer = createServer((_req, res) => { res.writeHead(200); res.end('ok') })
     wss = new WebSocketServer({ server: httpServer })
 
     wss.on('connection', (ws: TaggedWS) => {
       ws.isAlive = true
       ws.on('pong', () => { ws.isAlive = true })
-
       ws._peerId = randomUUID()
 
-      ws.on('message', async (raw) => {
+      ws.on('message', (raw, isBinary) => {
+        const id = ws._peerId!
+
+        // Binary = audio frame, relay immediately
+        if (isBinary) {
+          const channel = ws._channel
+          if (!channel) return
+          const room = rooms.get(channel)
+          if (!room) return
+          // Prepend 36-byte sender ID so clients know who is speaking
+          const idBuf = Buffer.from(id.padEnd(36).slice(0, 36), 'ascii')
+          const frame = Buffer.concat([idBuf, raw as Buffer])
+          room.broadcastBinary(frame, id)
+          return
+        }
+
         let msg: Record<string, unknown>
         try { msg = JSON.parse(raw.toString()) } catch { return }
-        const id = ws._peerId!
 
         try {
           switch (msg.type) {
             case 'join': {
               const { channel, nickname, avatar } = msg as { channel: string; nickname: string; avatar?: string }
-              if (!channel || !nickname || !sfu) return
-
-              await handleLeave(ws)
-
+              if (!channel || !nickname) return
+              handleLeave(ws)
               ws._channel = channel
               ws._nickname = nickname
               ws._avatar = avatar
-
-              const room = sfu.getOrCreateRoom(channel)
+              const room = getOrCreateRoom(channel)
               const existing = room.list()
               room.add(id, ws, { id, nickname, avatar })
-
-              safeSend(ws, {
-                type: 'welcome',
-                id,
-                iceServers: getClientIceServers(),
-                participants: existing,
-              })
-              break
-            }
-
-            case 'offer': {
-              const { sdp } = msg as { sdp: string }
-              if (!sdp || !ws._channel) return
-              const room = sfu?.getRoom(ws._channel)
-              await room?.handleOffer(id, sdp)
-              break
-            }
-
-            case 'answer': {
-              const { sdp } = msg as { sdp: string }
-              if (!sdp || !ws._channel) return
-              const room = sfu?.getRoom(ws._channel)
-              await room?.handleAnswer(id, sdp)
-              break
-            }
-
-            case 'ice-candidate': {
-              const { candidate } = msg as { candidate: { candidate: string; sdpMid?: string; sdpMLineIndex?: number } }
-              if (!candidate || !ws._channel) return
-              const room = sfu?.getRoom(ws._channel)
-              await room?.handleIceCandidate(id, candidate)
-              break
-            }
-
-            case 'stop-produce': {
-              const { kind } = msg as { kind: string }
-              if (kind !== 'video' || !ws._channel) return
-              const room = sfu?.getRoom(ws._channel)
-              await room?.stopProduceVideo(id)
+              safeSend(ws, { type: 'welcome', id, participants: existing })
               break
             }
 
@@ -143,40 +156,36 @@ export function startServer(port: number): Promise<void> {
               if (!nickname || !ws._channel) return
               ws._nickname = nickname
               ws._avatar = avatar
-              const room = sfu?.getRoom(ws._channel)
-              room?.updateInfo(id, { nickname, avatar })
+              rooms.get(ws._channel)?.update(id, { nickname, avatar })
               break
             }
 
             case 'chat': {
               const { text } = msg as { text: string }
               if (!text || !ws._channel) return
-              const room = sfu?.getRoom(ws._channel)
-              room?.broadcast({
-                type: 'chat',
-                from: id,
-                text,
+              rooms.get(ws._channel)?.broadcast({
+                type: 'chat', from: id, text,
                 nickname: ws._nickname ?? 'unknown',
                 avatar: ws._avatar,
               }, id)
               break
             }
 
-            case 'leave': {
-              await handleLeave(ws)
+            case 'leave':
+              handleLeave(ws)
               break
-            }
           }
         } catch (e) {
-          console.warn(`[signaling] message handler error for ${id.slice(0, 8)}:`, e)
+          console.warn('[signaling] error:', e)
         }
       })
 
-      ws.on('close', () => { handleLeave(ws).catch(() => {}) })
-      ws.on('error', () => { handleLeave(ws).catch(() => {}) })
+      ws.on('close', () => handleLeave(ws))
+      ws.on('error', () => handleLeave(ws))
     })
 
-    const interval = setInterval(() => {
+    // Keepalive ping
+    const pingInterval = setInterval(() => {
       wss?.clients.forEach((ws) => {
         const w = ws as TaggedWS
         if (w.isAlive === false) { w.terminate(); return }
@@ -185,8 +194,7 @@ export function startServer(port: number): Promise<void> {
       })
     }, 25000)
 
-    wss.on('close', () => clearInterval(interval))
-
+    wss.on('close', () => clearInterval(pingInterval))
     httpServer.listen(port, () => { clearTimeout(timer); resolve() })
     httpServer.on('error', (e) => { clearTimeout(timer); reject(e) })
   })
@@ -195,15 +203,11 @@ export function startServer(port: number): Promise<void> {
 export function getServerPort(): number | null {
   if (!httpServer) return null
   const addr = httpServer.address()
-  if (addr && typeof addr === 'object') return addr.port
-  return null
+  return addr && typeof addr === 'object' ? addr.port : null
 }
 
 export async function stopServer(): Promise<void> {
-  if (sfu) {
-    await sfu.closeAll()
-    sfu = null
-  }
+  rooms.clear()
   wss?.close()
   httpServer?.close()
   wss = null

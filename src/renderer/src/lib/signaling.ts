@@ -1,24 +1,22 @@
 /**
- * Тонкий WS-клиент для сигналинга к SFU-серверу. Знает только про сериализацию
- * сообщений и dispatch событий — никакой WebRTC-логики, она в `sfuClient.ts`.
+ * Thin WebSocket client for signaling.
+ * Text frames: JSON room management (join/leave/chat/participant events).
+ * Binary frames: audio PCM relay — first 36 bytes = sender UUID, rest = PCM.
  */
 
-import type { PeerState } from './sfuClient'
+export interface ParticipantInfo {
+  id: string
+  nickname: string
+  avatar?: string
+}
 
 export interface SignalingHandlers {
-  onWelcome: (data: {
-    id: string
-    iceServers: RTCIceServer[]
-    participants: PeerState[]
-  }) => void
-  onSdpOffer: (sdp: string) => void
-  onSdpAnswer: (sdp: string) => void
-  onIceCandidate: (candidate: RTCIceCandidateInit) => void
-  onParticipantJoined: (participant: PeerState) => void
+  onWelcome: (data: { id: string; participants: ParticipantInfo[] }) => void
+  onParticipantJoined: (participant: ParticipantInfo) => void
   onParticipantLeft: (id: string) => void
-  onParticipantUpdated: (participant: PeerState) => void
-  onParticipantSharing: (id: string, isSharing: boolean) => void
+  onParticipantUpdated: (participant: ParticipantInfo) => void
   onChat: (from: string, text: string, nickname: string, avatar?: string) => void
+  onAudioFrame: (senderId: string, pcm: ArrayBuffer) => void
   onClose: () => void
 }
 
@@ -35,16 +33,24 @@ export class SignalingClient {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.url)
+      this.ws.binaryType = 'arraybuffer'
 
-      const timer = setTimeout(() => {
-        this.ws?.close()
-        reject(new Error('Connection timeout'))
-      }, 5000)
+      const timer = setTimeout(() => { this.ws?.close(); reject(new Error('Connection timeout')) }, 5000)
 
       this.ws.onopen = () => { clearTimeout(timer); resolve() }
-      this.ws.onerror = () => { clearTimeout(timer); reject(new Error('Cannot connect to signaling server')) }
+      this.ws.onerror = () => { clearTimeout(timer); reject(new Error('Cannot connect to server')) }
 
       this.ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          // Binary: [36 bytes ASCII sender ID] [PCM data]
+          if (e.data.byteLength < 36) return
+          const idBytes = new Uint8Array(e.data, 0, 36)
+          const senderId = new TextDecoder().decode(idBytes).trimEnd()
+          const pcm = e.data.slice(36)
+          this.handlers.onAudioFrame?.(senderId, pcm)
+          return
+        }
+
         let msg: Record<string, unknown>
         try { msg = JSON.parse(e.data as string) } catch { return }
 
@@ -52,30 +58,17 @@ export class SignalingClient {
           case 'welcome':
             this.handlers.onWelcome?.({
               id: msg.id as string,
-              iceServers: msg.iceServers as RTCIceServer[],
-              participants: msg.participants as PeerState[],
+              participants: msg.participants as ParticipantInfo[],
             })
             break
-          case 'offer':
-            this.handlers.onSdpOffer?.(msg.sdp as string)
-            break
-          case 'answer':
-            this.handlers.onSdpAnswer?.(msg.sdp as string)
-            break
-          case 'ice-candidate':
-            this.handlers.onIceCandidate?.(msg.candidate as RTCIceCandidateInit)
-            break
           case 'participant-joined':
-            this.handlers.onParticipantJoined?.(msg.participant as PeerState)
+            this.handlers.onParticipantJoined?.(msg.participant as ParticipantInfo)
             break
           case 'participant-left':
             this.handlers.onParticipantLeft?.(msg.id as string)
             break
           case 'participant-updated':
-            this.handlers.onParticipantUpdated?.(msg.participant as PeerState)
-            break
-          case 'participant-sharing':
-            this.handlers.onParticipantSharing?.(msg.id as string, msg.isSharing as boolean)
+            this.handlers.onParticipantUpdated?.(msg.participant as ParticipantInfo)
             break
           case 'chat':
             this.handlers.onChat?.(
@@ -92,30 +85,28 @@ export class SignalingClient {
     })
   }
 
-  send(msg: object): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg))
-    }
+  send(msg: object) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
   }
 
-  join(channel: string, nickname: string, avatar?: string): void {
+  sendBinary(data: ArrayBuffer) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data)
+  }
+
+  join(channel: string, nickname: string, avatar?: string) {
     this.send({ type: 'join', channel, nickname, avatar })
   }
 
-  sendChat(text: string): void {
-    this.send({ type: 'chat', text })
-  }
-
-  updateProfile(nickname: string, avatar?: string): void {
+  announce(nickname: string, avatar?: string) {
     this.send({ type: 'announce', nickname, avatar })
   }
 
-  leave(): void {
-    this.send({ type: 'leave' })
+  sendChat(text: string) {
+    this.send({ type: 'chat', text })
   }
 
-  disconnect(): void {
-    this.leave()
+  disconnect() {
+    this.send({ type: 'leave' })
     this.ws?.close()
     this.ws = null
   }
