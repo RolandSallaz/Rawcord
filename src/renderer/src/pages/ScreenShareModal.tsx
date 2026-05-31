@@ -14,19 +14,20 @@ interface Quality {
   label: string
   width: number
   height: number
+  bitrate: number   // target video bitrate at 30 fps (bits/s)
 }
 
 const QUALITIES: Quality[] = [
-  { label: '1080p', width: 1920, height: 1080 },
-  { label: '720p',  width: 1280, height: 720  },
-  { label: '480p',  width: 854,  height: 480  },
-  { label: '320p',  width: 568,  height: 320  },
+  { label: '1080p', width: 1920, height: 1080, bitrate: 2_500_000 },
+  { label: '720p',  width: 1280, height: 720,  bitrate: 1_200_000 },
+  { label: '480p',  width: 854,  height: 480,  bitrate: 700_000  },
+  { label: '320p',  width: 568,  height: 320,  bitrate: 400_000  },
 ]
 
 const FPS_OPTIONS = [10, 30, 60]
 
 interface Props {
-  onStart: (stream: MediaStream, sourceId: string, withAudio: boolean) => void
+  onStart: (stream: MediaStream, sourceId: string, withAudio: boolean, bitrate: number) => void
   onClose: () => void
 }
 
@@ -80,7 +81,10 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
           frameRate: { ideal: fps },
         },
       })
-      onStart(stream, selectedId, withAudio)
+      // Scale the target bitrate with the chosen frame rate (clamped) so higher
+      // fps doesn't smear, and lower fps saves bandwidth on a tight uplink.
+      const bitrate = Math.round(q.bitrate * Math.min(2, Math.max(0.5, fps / 30)))
+      onStart(stream, selectedId, withAudio, bitrate)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка захвата экрана')
       setStarting(false)

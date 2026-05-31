@@ -22,6 +22,9 @@ export interface PeerInfo {
 const SAMPLE_RATE = 48000
 const FRAME_SAMPLES = 1920   // 40 ms
 const JITTER_BUF_SEC = 0.06  // 60 ms jitter buffer
+const MAX_PLAYBACK_AHEAD = 0.4  // max seconds of buffered audio before we resync to live
+const VOICE_SEND_THRESHOLD = 0.0065  // RMS above which we consider the mic "speaking"
+const VOICE_HANGOVER_MS = 400        // keep transmitting this long after speech stops
 
 const MIC_WORKLET_CODE = `
 class MicCaptureProcessor extends AudioWorkletProcessor {
@@ -150,6 +153,7 @@ export class WsAudioClient {
   private micWorkletNode: AudioWorkletNode | null = null
   private micMuted = false
   private micVolume = 100
+  private lastVoiceTs = 0   // last time mic RMS crossed the speak threshold (ms)
 
   // Playback
   private playCtx: AudioContext | null = null
@@ -239,10 +243,19 @@ export class WsAudioClient {
           i16[i] = Math.max(-32768, Math.min(32767, Math.round(i16[i] * factor)))
         }
       }
-      this.signaling.sendBinary(0x01, e.data)
-      // Local VAD (post-gain)
+      // VAD (post-gain)
       let sum = 0; for (let i = 0; i < i16.length; i++) { const f = i16[i] / 32768; sum += f * f }
-      this.localRms = Math.sqrt(sum / i16.length)
+      const rms = Math.sqrt(sum / i16.length)
+      this.localRms = rms
+
+      // Silence suppression: only transmit while speaking (plus a short hangover).
+      // Sending continuous PCM during silence wastes ~768 kbps of uplink and
+      // congests the shared socket, delaying voice and the screen-share stream.
+      const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+      if (rms > VOICE_SEND_THRESHOLD) this.lastVoiceTs = nowMs
+      if (nowMs - this.lastVoiceTs < VOICE_HANGOVER_MS) {
+        this.signaling.sendBinary(0x01, e.data)
+      }
     }
 
     source.connect(worklet)
@@ -329,7 +342,11 @@ export class WsAudioClient {
     source.connect(this.getPeerGain(peerId))
     const now = ctx.currentTime
     const prev = this.nextPlayTimes.get(peerId) ?? 0
-    const startAt = Math.max(now + JITTER_BUF_SEC, prev)
+    let startAt = Math.max(now + JITTER_BUF_SEC, prev)
+    // Anti-drift: if a burst (e.g. after network congestion) pushed the
+    // schedule too far into the future, drop the backlog and resync to live so
+    // latency self-heals instead of growing without bound.
+    if (startAt - now > MAX_PLAYBACK_AHEAD) startAt = now + JITTER_BUF_SEC
     source.start(startAt)
     this.nextPlayTimes.set(peerId, startAt + float32.length / SAMPLE_RATE)
   }
@@ -367,7 +384,7 @@ export class WsAudioClient {
    * captureStream: from getDisplayMedia (video + optional audio)
    * If captureStream has audio, attempts to cancel Rawcord voices from it.
    */
-  async startScreenShare(captureStream: MediaStream): Promise<void> {
+  async startScreenShare(captureStream: MediaStream, videoBitsPerSecond = 1_200_000): Promise<void> {
     if (this.screenRecorder) return
 
     const videoTrack = captureStream.getVideoTracks()[0]
@@ -408,7 +425,7 @@ export class WsAudioClient {
 
     const recorder = new MediaRecorder(streamToRecord, {
       mimeType,
-      videoBitsPerSecond: 1_500_000,
+      videoBitsPerSecond,
     })
 
     recorder.ondataavailable = async (e) => {

@@ -368,10 +368,10 @@ export default function ChannelPage() {
     connectToChannel(input, false)
   }
 
-  async function handleStartScreenShare(stream: MediaStream, _sourceId: string, _withAudio: boolean) {
+  async function handleStartScreenShare(stream: MediaStream, _sourceId: string, _withAudio: boolean, bitrate?: number) {
     setScreenShareOpen(false)
     try {
-      await audioRef.current?.startScreenShare(stream)
+      await audioRef.current?.startScreenShare(stream, bitrate)
       setIsSharing(true)
       stream.getVideoTracks()[0]?.addEventListener('ended', () => {
         setIsSharing(false)

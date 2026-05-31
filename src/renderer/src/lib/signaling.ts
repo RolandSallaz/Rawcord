@@ -141,11 +141,17 @@ export class SignalingClient {
 
   /** Send binary frame: [1-byte type] + payload */
   sendBinary(type: 0x01 | 0x02, payload: ArrayBuffer) {
-    if (this.ws?.readyState !== WebSocket.OPEN) return
+    const ws = this.ws
+    if (ws?.readyState !== WebSocket.OPEN) return
+    // Backpressure: on a congested/limited uplink the socket send buffer grows.
+    // Queued real-time AUDIO only adds latency, so drop it instead of buffering
+    // — this also frees the pipe so the video stream / init segment keeps
+    // flowing (otherwise the viewer gets a black screen + voice lag).
+    if (type === 0x01 && ws.bufferedAmount > 256 * 1024) return
     const frame = new Uint8Array(1 + payload.byteLength)
     frame[0] = type
     frame.set(new Uint8Array(payload), 1)
-    this.ws.send(frame.buffer)
+    ws.send(frame.buffer)
   }
 
   join(channel: string, nickname: string, avatar?: string) {
