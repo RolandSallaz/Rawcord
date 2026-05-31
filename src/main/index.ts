@@ -3,12 +3,15 @@ import { join } from 'path'
 import { networkInterfaces } from 'os'
 import { autoUpdater } from 'electron-updater'
 import { startServer, stopServer } from './signalingServer'
+import { registerPtt, unregisterPtt, stopPtt } from './pttHook'
 
 const isDev = process.env['NODE_ENV'] === 'development'
 const SIGNAL_PORT = 3001
 
+let mainWindow: BrowserWindow | null = null
 let borderOverlay: BrowserWindow | null = null
 let pendingCaptureSourceId = ''
+let pendingCaptureAudio = false   // capture system (loopback) audio for the next share
 let updateWindow: BrowserWindow | null = null
 
 function getLocalIp(): string {
@@ -143,9 +146,14 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       nodeIntegration: true,
-      contextIsolation: false
+      contextIsolation: false,
+      // Keep audio capture / timers running at full rate when the window is
+      // minimized or in the background (otherwise voice stops transmitting).
+      backgroundThrottling: false
     }
   })
+
+  mainWindow = win
 
   win.on('ready-to-show', () => {
     win.show()
@@ -178,6 +186,14 @@ ipcMain.handle('server:stop', async () => {
   await stopServer()
 })
 
+// Global push-to-talk hook (works while the window is minimized/unfocused)
+ipcMain.handle('ptt:register', (e, code: string) => {
+  return registerPtt(code, e.sender)
+})
+ipcMain.handle('ptt:unregister', () => {
+  unregisterPtt()
+})
+
 // Screen capture sources (for picker UI)
 ipcMain.handle('screen:getSources', async () => {
   const sources = await desktopCapturer.getSources({
@@ -194,8 +210,9 @@ ipcMain.handle('screen:getSources', async () => {
 })
 
 // Store pending source ID; renderer calls this then immediately calls getDisplayMedia()
-ipcMain.handle('screen:capture', async (_event, sourceId: string) => {
+ipcMain.handle('screen:capture', async (_event, sourceId: string, withAudio?: boolean) => {
   pendingCaptureSourceId = sourceId
+  pendingCaptureAudio = withAudio === true
 })
 
 // Yellow border overlay for the captured screen
@@ -245,15 +262,22 @@ app.whenReady().then(async () => {
   session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
     if (!pendingCaptureSourceId) { callback({}); return }
     const id = pendingCaptureSourceId
+    const wantAudio = pendingCaptureAudio
     pendingCaptureSourceId = ''
+    pendingCaptureAudio = false
     try {
       const sources = await desktopCapturer.getSources({
         types: ['screen', 'window'],
         thumbnailSize: { width: 0, height: 0 },
       })
       const source = sources.find(s => s.id === id)
-      if (source) callback({ video: source })
-      else callback({})
+      if (source) {
+        // 'loopback' captures all system audio (Windows). Per-application audio
+        // isolation isn't supported by Chromium/Electron, so window shares also
+        // carry full system audio; Rawcord's own output is removed downstream
+        // via phase cancellation in WsAudioClient.startScreenShare.
+        callback(wantAudio ? { video: source, audio: 'loopback' } : { video: source })
+      } else callback({})
     } catch {
       callback({})
     }
@@ -266,7 +290,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   stopServer().catch(() => {})
+  stopPtt()
   borderOverlay?.close()
   borderOverlay = null
   if (process.platform !== 'darwin') app.quit()
 })
+
+app.on('will-quit', () => stopPtt())

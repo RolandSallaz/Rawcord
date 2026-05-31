@@ -71,7 +71,7 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
     const q = QUALITIES[qualityIdx]
     try {
       // Store the selected source in the main process so setDisplayMediaRequestHandler can use it
-      await ipcRenderer.invoke('screen:capture', selectedId)
+      await ipcRenderer.invoke('screen:capture', selectedId, withAudio)
       const stream = await navigator.mediaDevices.getDisplayMedia({
         audio: withAudio,
         video: {
@@ -155,7 +155,8 @@ export default function ScreenShareModal({ onStart, onClose }: Props) {
           </div>
           {withAudio && (
             <p className="settings-hint" style={{ marginTop: 4 }}>
-              Голоса участников Rawcord будут убраны из трансляции автоматически
+              Голоса участников Rawcord будут убраны из трансляции автоматически.
+              {tab === 'window' && ' При трансляции приложения передаётся весь звук компьютера — изолировать звук отдельного приложения нельзя.'}
             </p>
           )}
         </div>

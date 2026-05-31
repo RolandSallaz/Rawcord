@@ -35,6 +35,8 @@ export class SignalingClient {
   private ws: WebSocket | null = null
   private handlers: Partial<SignalingHandlers> = {}
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private opened = false      // socket reached OPEN at least once
+  private closeFired = false  // onClose handler invoked (guard against double-fire)
 
   constructor(private url: string) {}
 
@@ -51,6 +53,7 @@ export class SignalingClient {
 
       this.ws.onopen = () => {
         clearTimeout(timer)
+        this.opened = true
         this.heartbeatTimer = setInterval(() => {
           if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ type: 'ping' }))
@@ -61,8 +64,11 @@ export class SignalingClient {
 
       this.ws.onerror = () => {
         clearTimeout(timer)
-        this.handlers.onClose?.()
-        reject(new Error('Cannot connect to server'))
+        // If we never opened, this is an initial-connect failure: reject the
+        // promise and let the caller decide. Do NOT fire onClose here - onclose
+        // always follows and is the single place we notify disconnects, so
+        // firing here would double-trigger reconnect scheduling.
+        if (!this.opened) reject(new Error('Cannot connect to server'))
       }
 
       this.ws.onmessage = (e) => {
@@ -119,7 +125,12 @@ export class SignalingClient {
 
       this.ws.onclose = () => {
         if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
-        this.handlers.onClose?.()
+        // Only notify once, and only if we actually got connected. A failed
+        // initial connect is reported via the rejected connect() promise.
+        if (this.opened && !this.closeFired) {
+          this.closeFired = true
+          this.handlers.onClose?.()
+        }
       }
     })
   }

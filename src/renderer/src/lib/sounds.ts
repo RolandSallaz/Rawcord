@@ -45,3 +45,13 @@ export function playLeaveSound(): void {
   tone(780, 0,    0.12)
   tone(520, 0.13, 0.14)
 }
+
+/** Нажали кнопку «говорить» (PTT) — короткий восходящий бип */
+export function playPttOnSound(): void {
+  tone(660, 0, 0.06, 0.12, 'triangle')
+}
+
+/** Отпустили кнопку «говорить» (PTT) — короткий нисходящий бип */
+export function playPttOffSound(): void {
+  tone(440, 0, 0.06, 0.12, 'triangle')
+}

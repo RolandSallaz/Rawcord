@@ -52,22 +52,36 @@ class VideoReceiver {
   private url: string
   readonly el: HTMLVideoElement
 
+  // Live playback tuning
+  private static readonly MAX_LATENCY = 1.0    // seconds behind live before we jump forward
+  private static readonly EVICT_BEHIND = 8.0   // keep at most this much buffered behind currentTime
+
   constructor(mimeType: string) {
     this.el = document.createElement('video')
     this.el.autoplay = true
     this.el.playsInline = true
     this.el.style.width = '100%'
     this.el.style.display = 'block'
-    this.el.muted = false
+    // Start muted so autoplay is never blocked by the browser policy; the UI
+    // unmutes once the user opens the stream (a user gesture).
+    this.el.muted = true
 
     this.url = URL.createObjectURL(this.ms)
     this.el.src = this.url
+
+    // Kick playback whenever data is ready (autoplay can still stall otherwise).
+    const tryPlay = () => { this.el.play().catch(() => {}) }
+    this.el.addEventListener('canplay', tryPlay)
+    this.el.addEventListener('loadeddata', tryPlay)
+    // Keep close to the live edge.
+    this.el.addEventListener('timeupdate', () => this.catchUpToLive())
 
     this.ms.addEventListener('sourceopen', () => {
       if (this.ms.readyState !== 'open') return
       try {
         this.sb = this.ms.addSourceBuffer(mimeType)
-        this.sb.addEventListener('updateend', () => this.drainQueue())
+        this.sb.mode = 'sequence'   // chunks arrive in order; ignore internal timestamps
+        this.sb.addEventListener('updateend', () => { this.evictOld(); this.drainQueue() })
         this.drainQueue()
       } catch (e) {
         console.warn('[VideoReceiver] addSourceBuffer failed:', mimeType, e)
@@ -85,9 +99,33 @@ class VideoReceiver {
       try {
         this.sb.appendBuffer(this.queue.shift()!)
       } catch (e) {
-        console.warn('[VideoReceiver] appendBuffer error:', e)
-        this.queue = []   // clear on error, wait for next keyframe
+        // QuotaExceededError: buffer is full — evict old data and retry next tick.
+        if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+          this.evictOld(true)
+        } else {
+          console.warn('[VideoReceiver] appendBuffer error:', e)
+        }
+        break   // wait for updateend / next frame instead of dropping everything
       }
+    }
+  }
+
+  /** Drop buffered data well behind the playhead to avoid unbounded growth / quota stalls. */
+  private evictOld(aggressive = false) {
+    if (!this.sb || this.sb.updating || this.sb.buffered.length === 0) return
+    const start = this.sb.buffered.start(0)
+    const cutoff = (aggressive ? this.el.currentTime - 2 : this.el.currentTime - VideoReceiver.EVICT_BEHIND)
+    if (cutoff > start) {
+      try { this.sb.remove(start, cutoff) } catch {}
+    }
+  }
+
+  /** If playback has drifted behind the live edge, jump forward. */
+  private catchUpToLive() {
+    if (!this.sb || this.sb.buffered.length === 0) return
+    const liveEdge = this.sb.buffered.end(this.sb.buffered.length - 1)
+    if (liveEdge - this.el.currentTime > VideoReceiver.MAX_LATENCY) {
+      this.el.currentTime = liveEdge - 0.1
     }
   }
 
@@ -120,6 +158,7 @@ export class WsAudioClient {
   private outputDeviceId = ''
   private peerGains = new Map<string, GainNode>()
   private nextPlayTimes = new Map<string, number>()
+  private voiceOutputDest: MediaStreamAudioDestinationNode | null = null
 
   // VAD
   private speakingPeers = new Set<string>()
@@ -155,6 +194,23 @@ export class WsAudioClient {
 
   setStream(stream: MediaStream) { this.micStream = stream }
 
+  /**
+   * Detach the mic stream so a subsequent destroy() will NOT stop its tracks.
+   * Used during reconnect to keep the same capture device alive across sockets.
+   */
+  detachMicStream(): MediaStream | null {
+    const s = this.micStream
+    this.micStream = null
+    return s
+  }
+
+  /** Apply live audio constraints (e.g. noise suppression) to the active mic track. */
+  async applyMicConstraints(constraints: MediaTrackConstraints): Promise<void> {
+    const track = this.micStream?.getAudioTracks()[0]
+    if (!track) return
+    try { await track.applyConstraints(constraints) } catch (e) { console.warn('[WsAudioClient] applyConstraints failed:', e) }
+  }
+
   async startCapture(): Promise<void> {
     if (!this.micStream) return
     const ctx = new AudioContext({ sampleRate: SAMPLE_RATE })
@@ -175,9 +231,16 @@ export class WsAudioClient {
 
     worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
       if (this.micMuted) return
-      this.signaling.sendBinary(0x01, e.data)
-      // Local VAD
       const i16 = new Int16Array(e.data)
+      // Apply mic gain (volume slider, 0–200% → 0.0–2.0).
+      const factor = this.micVolume / 100
+      if (factor !== 1) {
+        for (let i = 0; i < i16.length; i++) {
+          i16[i] = Math.max(-32768, Math.min(32767, Math.round(i16[i] * factor)))
+        }
+      }
+      this.signaling.sendBinary(0x01, e.data)
+      // Local VAD (post-gain)
       let sum = 0; for (let i = 0; i < i16.length; i++) { const f = i16[i] / 32768; sum += f * f }
       this.localRms = Math.sqrt(sum / i16.length)
     }
@@ -228,9 +291,12 @@ export class WsAudioClient {
   getVoiceOutputStream(): MediaStream | null {
     if (!this.playCtx || !this.masterGain) return null
     try {
-      const dest = this.playCtx.createMediaStreamDestination()
-      this.masterGain.connect(dest)
-      return dest.stream
+      // Reuse a single destination node to avoid leaking one per call.
+      if (!this.voiceOutputDest) {
+        this.voiceOutputDest = this.playCtx.createMediaStreamDestination()
+        this.masterGain.connect(this.voiceOutputDest)
+      }
+      return this.voiceOutputDest.stream
     } catch { return null }
   }
 
@@ -447,6 +513,7 @@ export class WsAudioClient {
 
     for (const g of this.peerGains.values()) g.disconnect()
     this.peerGains.clear()
+    this.voiceOutputDest?.disconnect(); this.voiceOutputDest = null
     this.masterGain?.disconnect(); this.masterGain = null
     this.playCtx?.close(); this.playCtx = null
 

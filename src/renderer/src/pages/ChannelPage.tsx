@@ -3,7 +3,7 @@ import { SignalingClient, type ParticipantInfo } from '../lib/signaling'
 import { WsAudioClient } from '../lib/wsAudioClient'
 import { loadSettings, saveSettings, type AudioSettings } from '../lib/settings'
 import { loadProfile, saveProfile, type UserProfile } from '../lib/profile'
-import { playJoinSound, playLeaveSound } from '../lib/sounds'
+import { playJoinSound, playLeaveSound, playPttOnSound, playPttOffSound } from '../lib/sounds'
 import { addRecentServer, loadRecentServers, removeRecentServer, formatRelativeTime, type RecentServer } from '../lib/connectionHistory'
 import SettingsModal from './SettingsModal'
 import ScreenShareModal from './ScreenShareModal'
@@ -12,7 +12,8 @@ import ScreenShareModal from './ScreenShareModal'
 const { ipcRenderer } = (window as any).require('electron')
 
 type AppState = 'idle' | 'connecting' | 'connected' | 'error' | 'reconnecting'
-const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]
+// First retry is near-instant for seamless recovery from brief network blips.
+const RECONNECT_DELAYS = [500, 2000, 5000, 10000, 20000, 30000]
 
 interface ChatMessage {
   id: string; from: string; text: string; nickname: string; avatar?: string; timestamp: number
@@ -80,7 +81,11 @@ export default function ChannelPage() {
   const intentionalDisconnectRef = useRef(false)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
+  const reconnectPendingRef = useRef(false)   // guard against concurrent reconnect chains
   const lastConnectionRef = useRef<{ url: string; isOwner: boolean } | null>(null)
+  // Mic stream is kept alive across reconnects so audio resumes instantly
+  // without re-prompting / re-acquiring the device.
+  const micStreamRef = useRef<MediaStream | null>(null)
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
   useEffect(() => { return () => { cleanup() } }, [])
@@ -102,39 +107,87 @@ export default function ChannelPage() {
     audioRef.current?.setMicGain(settings.micVolume)
   }, [settings.micVolume])
 
+  // Re-apply noise suppression / AGC live (no reconnect needed).
+  useEffect(() => {
+    audioRef.current?.applyMicConstraints({
+      noiseSuppression: settings.noiseSuppression,
+      autoGainControl: settings.noiseSuppression,
+      echoCancellation: true,
+    })
+  }, [settings.noiseSuppression])
+
   useEffect(() => {
     if (settings.voiceMode !== 'ptt' || appState !== 'connected') return
-    audioRef.current?.setMicMuted(true)
-    if (settings.pttKey.startsWith('Mouse')) {
-      const btn = parseInt(settings.pttKey.replace('Mouse', ''))
-      const onDown = (e: MouseEvent) => { if (e.button === btn) audioRef.current?.setMicMuted(false) }
-      const onUp   = (e: MouseEvent) => { if (e.button === btn) audioRef.current?.setMicMuted(true) }
-      window.addEventListener('mousedown', onDown); window.addEventListener('mouseup', onUp)
-      return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('mouseup', onUp) }
-    } else {
-      const onDown = (e: KeyboardEvent) => { if (e.code === settings.pttKey && !e.repeat) audioRef.current?.setMicMuted(false) }
-      const onUp   = (e: KeyboardEvent) => { if (e.code === settings.pttKey) audioRef.current?.setMicMuted(true) }
-      window.addEventListener('keydown', onDown); window.addEventListener('keyup', onUp)
-      return () => { window.removeEventListener('keydown', onDown); window.removeEventListener('keyup', onUp) }
+    // PTT drives mute state directly; keep React state in sync so the UI icon
+    // matches and the manual toggle button doesn't fight the key handler.
+    // `talking` is idempotent so duplicate down/up from both the window and the
+    // OS-level global hook don't double-trigger sounds.
+    let talking = false
+    const setTalking = (on: boolean) => {
+      if (deafened) return            // deafen always wins
+      if (on === talking) return      // no change → no sound, no churn
+      talking = on
+      audioRef.current?.setMicMuted(!on)
+      setMicMuted(!on)
+      on ? playPttOnSound() : playPttOffSound()
     }
-  }, [settings.voiceMode, settings.pttKey, appState])
+    audioRef.current?.setMicMuted(true); setMicMuted(true)   // start muted
 
-  function cleanup() {
+    const isMouse = settings.pttKey.startsWith('Mouse')
+    const mouseBtn = isMouse ? parseInt(settings.pttKey.replace('Mouse', '')) : -1
+
+    // 1) In-window listeners (work while the app is focused).
+    const onMouseDown = (e: MouseEvent) => { if (isMouse && e.button === mouseBtn) setTalking(true) }
+    const onMouseUp   = (e: MouseEvent) => { if (isMouse && e.button === mouseBtn) setTalking(false) }
+    const onKeyDown   = (e: KeyboardEvent) => { if (!isMouse && e.code === settings.pttKey && !e.repeat) setTalking(true) }
+    const onKeyUp     = (e: KeyboardEvent) => { if (!isMouse && e.code === settings.pttKey) setTalking(false) }
+    window.addEventListener('mousedown', onMouseDown); window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('keydown', onKeyDown); window.addEventListener('keyup', onKeyUp)
+
+    // 2) OS-level global hook via main process (works while minimized/unfocused).
+    const onGlobalDown = () => setTalking(true)
+    const onGlobalUp = () => setTalking(false)
+    ipcRenderer.on('ptt:down', onGlobalDown)
+    ipcRenderer.on('ptt:up', onGlobalUp)
+    ipcRenderer.invoke('ptt:register', settings.pttKey).catch(() => {})
+
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown); window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp)
+      ipcRenderer.removeListener('ptt:down', onGlobalDown)
+      ipcRenderer.removeListener('ptt:up', onGlobalUp)
+      ipcRenderer.invoke('ptt:unregister').catch(() => {})
+    }
+  }, [settings.voiceMode, settings.pttKey, appState, deafened])
+
+  function cleanup(keepMic = false) {
     setIsSpeaking(false); setSpeakingPeers(new Set())
+    // During reconnect, preserve the mic stream so we don't re-prompt the device.
+    if (keepMic && audioRef.current) {
+      micStreamRef.current = audioRef.current.detachMicStream()
+    }
     audioRef.current?.destroy(); audioRef.current = null
     signalingRef.current?.disconnect(); signalingRef.current = null
+    if (!keepMic) {
+      micStreamRef.current?.getTracks().forEach(t => t.stop())
+      micStreamRef.current = null
+    }
   }
 
   function cancelReconnect() {
     if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null }
     reconnectAttemptRef.current = 0
+    reconnectPendingRef.current = false
   }
 
   function scheduleReconnect() {
+    // Guard: a disconnect may surface via several events; only one chain at a time.
+    if (reconnectPendingRef.current) return
+    reconnectPendingRef.current = true
     const attempt = reconnectAttemptRef.current
     if (attempt >= RECONNECT_DELAYS.length) {
       setAppState('error'); setErrorMsg('Не удалось восстановить соединение')
-      reconnectAttemptRef.current = 0; return
+      reconnectAttemptRef.current = 0; reconnectPendingRef.current = false; return
     }
     const delay = RECONNECT_DELAYS[attempt]
     let remaining = Math.ceil(delay / 1000)
@@ -142,10 +195,17 @@ export default function ChannelPage() {
     const countInterval = setInterval(() => { remaining--; setReconnectCountdown(remaining); if (remaining <= 0) clearInterval(countInterval) }, 1000)
     reconnectTimerRef.current = setTimeout(async () => {
       clearInterval(countInterval); reconnectAttemptRef.current++
+      reconnectPendingRef.current = false   // allow this attempt's failure to reschedule
       const info = lastConnectionRef.current
       if (!info) { setAppState('idle'); return }
       setAppState('connecting')
       try {
+        // If we host the server, make sure it's running again (idempotent —
+        // no-op if still alive, restarts it if the process died).
+        if (info.isOwner) {
+          const port = parseInt(info.url.split(':').pop() ?? '3001', 10)
+          await ipcRenderer.invoke('server:start', port).catch(() => {})
+        }
         await connectToChannel(info.isOwner ? `ws://127.0.0.1:${info.url.split(':').pop()}` : info.url, info.isOwner)
       } catch { scheduleReconnect() }
     }, delay)
@@ -158,16 +218,24 @@ export default function ChannelPage() {
 
   const connectToChannel = useCallback(async (wsUrl: string, owner: boolean) => {
     let stream: MediaStream
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: settings.inputDeviceId ? { exact: settings.inputDeviceId } : undefined,
-          noiseSuppression: settings.noiseSuppression, echoCancellation: true, sampleRate: 48000,
-        },
-        video: false,
-      })
-    } catch {
-      setErrorMsg('Нет доступа к микрофону'); setAppState('error'); return
+    // Reuse the existing mic stream across reconnects for instant audio recovery.
+    if (micStreamRef.current && micStreamRef.current.getAudioTracks().some(t => t.readyState === 'live')) {
+      stream = micStreamRef.current
+    } else {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: settings.inputDeviceId ? { exact: settings.inputDeviceId } : undefined,
+            noiseSuppression: settings.noiseSuppression,
+            autoGainControl: settings.noiseSuppression,
+            echoCancellation: true, sampleRate: 48000,
+          },
+          video: false,
+        })
+      } catch {
+        setErrorMsg('Нет доступа к микрофону'); setAppState('error'); return
+      }
+      micStreamRef.current = stream
     }
 
     const signaling = new SignalingClient(wsUrl)
@@ -219,15 +287,24 @@ export default function ChannelPage() {
       }])
     })
     signaling.on('onClose', () => {
-      cleanup(); setPeers([]); setChatMessages([]); setRemoteStreams(new Map())
-      if (intentionalDisconnectRef.current) {
-        intentionalDisconnectRef.current = false; setAppState('idle'); setServerUrl('')
-      } else { scheduleReconnect() }
+      const intentional = intentionalDisconnectRef.current
+      cleanup(!intentional)   // keep mic alive for a seamless reconnect
+      setRemoteStreams(new Map())
+      if (intentional) {
+        intentionalDisconnectRef.current = false
+        setPeers([]); setChatMessages([]); setAppState('idle'); setServerUrl('')
+      } else {
+        // Keep peers/chat on screen during the brief reconnect for less flicker.
+        scheduleReconnect()
+      }
     })
 
     try { await signaling.connect() } catch {
-      stream.getTracks().forEach(t => t.stop()); cleanup()
-      setErrorMsg('Не удалось подключиться к серверу'); setAppState('error'); return
+      // Within a reconnect chain: keep mic and retry. First attempt: surface error.
+      if (reconnectAttemptRef.current > 0 && !intentionalDisconnectRef.current) {
+        cleanup(true); throw new Error('reconnect failed')   // caller reschedules
+      }
+      cleanup(); setErrorMsg('Не удалось подключиться к серверу'); setAppState('error'); return
     }
 
     signalingRef.current = signaling
@@ -250,6 +327,8 @@ export default function ChannelPage() {
   }
 
   function toggleMic() {
+    // In push-to-talk mode the key handler owns mute state; ignore manual toggle.
+    if (settings.voiceMode === 'ptt') return
     const next = !micMuted; setMicMuted(next)
     if (deafened && !next) { setDeafened(false); audioRef.current?.setDeafened(false) }
     audioRef.current?.setMicMuted(next)
@@ -358,6 +437,9 @@ export default function ChannelPage() {
                 watchingEl.style.width = '100%'
                 watchingEl.style.height = '100%'
                 watchingEl.style.objectFit = 'contain'
+                // User opened the stream (gesture) — safe to unmute + play.
+                watchingEl.muted = false
+                watchingEl.play().catch(() => {})
               }
             }}
           />
@@ -542,6 +624,8 @@ export default function ChannelPage() {
                             el.style.width = '100%'
                             el.style.height = '100%'
                             el.style.objectFit = 'contain'
+                            el.muted = true   // previews stay muted; unmuted only when opened
+                            el.play().catch(() => {})
                           }
                         }}
                       />
@@ -630,7 +714,6 @@ export default function ChannelPage() {
                   <span className="cp-copy-url-label">{copiedUrl ? 'Скопировано!' : serverUrl.replace('ws://', '')}</span>
                 </button>
               )}
-              {serverUrl && !isOwner && <span className="cp-server-info" title={serverUrl}>{serverUrl.replace('ws://', '')}</span>}
               <button className="cp-bar-icon-btn" title="Настройки" onClick={() => setSettingsOpen(true)}>
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
               </button>
